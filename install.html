@@ -114,7 +114,15 @@
     repo: 'noahlimjj/sleepsensor',
     apkUrl: 'https://github.com/noahlimjj/sleepsensor/releases/latest/download/SleepSensor.apk',
     ipaUrl: 'https://github.com/noahlimjj/sleepsensor/releases/latest/download/SleepSensor-unsigned.ipa',
-    // set to an itms-services manifest URL once you have a signed ad-hoc / enterprise build:
+    // Over-the-air "tap to install" for iPhone. Leave '' until the signed build
+    // exists — the Install-now card stays hidden and nothing breaks.
+    // After the .github/workflows/release-ios-signed.yml workflow has run once
+    // (see docs/ADHOC-IOS.md), set this to the manifest.plist release asset:
+    //   https://github.com/noahlimjj/sleepsensor/releases/latest/download/manifest.plist
+    // The button then opens
+    //   itms-services://?action=download-manifest&url=<that URL, encoded>
+    // and iOS installs the app straight to the home screen (device UDID must be
+    // in the ad-hoc provisioning profile).
     itmsManifestUrl: ''
   };
 

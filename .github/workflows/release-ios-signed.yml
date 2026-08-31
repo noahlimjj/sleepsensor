@@ -1,0 +1,188 @@
+name: Release iOS (signed ad-hoc)
+
+# Over-the-air ("tap a link, it installs") iOS distribution.
+#
+# This is a SEPARATE workflow from build.yml on purpose: it needs paid-account
+# signing material and must never be able to fail the confirmed-green unsigned
+# build. It is a clean no-op until signing is switched on.
+#
+# GATE: the job only runs when the repo variable IOS_SIGNING_ENABLED == 'true'
+#   (Settings -> Secrets and variables -> Actions -> Variables tab).
+# With the variable unset the whole job is skipped and the run shows green.
+#
+# Secrets it needs when enabled (Settings -> Secrets and variables -> Actions):
+#   IOS_DIST_CERT_P12_BASE64   base64 of the Apple Distribution cert .p12
+#   IOS_DIST_CERT_PASSWORD     the .p12 export password
+#   IOS_ADHOC_PROFILE_BASE64   base64 of the Ad Hoc .mobileprovision
+#   IOS_TEAM_ID                10-char Apple Developer Team ID
+# See docs/ADHOC-IOS.md for how to produce each of these.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  signed-ios:
+    name: Signed ad-hoc IPA + itms manifest
+    if: ${{ vars.IOS_SIGNING_ENABLED == 'true' }}
+    runs-on: macos-14
+    permissions:
+      contents: write
+    env:
+      BUNDLE_ID: app.sleepsensor.monitor
+      APP_TITLE: SleepSensor
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Import signing certificate
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.IOS_DIST_CERT_P12_BASE64 }}
+          p12-password: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
+
+      - name: Install provisioning profile
+        id: profile
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          echo "${{ secrets.IOS_ADHOC_PROFILE_BASE64 }}" | base64 --decode > "$RUNNER_TEMP/adhoc.mobileprovision"
+          security cms -D -i "$RUNNER_TEMP/adhoc.mobileprovision" > "$RUNNER_TEMP/adhoc.plist"
+          UUID=$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$RUNNER_TEMP/adhoc.plist")
+          NAME=$(/usr/libexec/PlistBuddy -c 'Print :Name' "$RUNNER_TEMP/adhoc.plist")
+          cp "$RUNNER_TEMP/adhoc.mobileprovision" "$HOME/Library/MobileDevice/Provisioning Profiles/$UUID.mobileprovision"
+          echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "Installed profile: $NAME ($UUID)"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web assets
+        run: node scripts/build-web.mjs
+
+      - name: Add iOS platform
+        run: npx cap add ios
+
+      - name: Patch Info.plist
+        run: node scripts/prepare-ios.mjs
+
+      - name: Sync Capacitor
+        run: npx cap sync ios
+
+      - name: CocoaPods
+        working-directory: ios/App
+        run: pod install --repo-update
+
+      - name: Write exportOptions.plist
+        run: |
+          set -euo pipefail
+          # Xcode 15 renamed the ad-hoc export method to "release-testing"
+          # (older toolchains used "ad-hoc"). macos-14 runners ship Xcode 15.
+          cat > "$RUNNER_TEMP/exportOptions.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>release-testing</string>
+            <key>teamID</key>
+            <string>${{ secrets.IOS_TEAM_ID }}</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>signingCertificate</key>
+            <string>Apple Distribution</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>${{ env.BUNDLE_ID }}</key>
+              <string>${{ steps.profile.outputs.name }}</string>
+            </dict>
+            <key>compileBitcode</key>
+            <false/>
+            <key>stripSwiftSymbols</key>
+            <true/>
+            <key>uploadSymbols</key>
+            <false/>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Archive
+        working-directory: ios/App
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM="${{ secrets.IOS_TEAM_ID }}" \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="${{ steps.profile.outputs.name }}" \
+            clean archive
+
+      - name: Export IPA
+        run: |
+          set -o pipefail
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/exportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export"
+          mkdir -p dist
+          IPA=$(find "$RUNNER_TEMP/export" -name '*.ipa' | head -n1)
+          if [ -z "$IPA" ]; then echo "no .ipa produced"; ls -R "$RUNNER_TEMP/export"; exit 1; fi
+          cp "$IPA" dist/SleepSensor-adhoc.ipa
+          ls -la dist
+
+      - name: Resolve public IPA URL
+        id: url
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/${{ github.repository }}/releases"
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "ipa=$BASE/download/${{ github.ref_name }}/SleepSensor-adhoc.ipa" >> "$GITHUB_OUTPUT"
+            echo "manifest=$BASE/download/${{ github.ref_name }}/manifest.plist" >> "$GITHUB_OUTPUT"
+          else
+            echo "ipa=$BASE/latest/download/SleepSensor-adhoc.ipa" >> "$GITHUB_OUTPUT"
+            echo "manifest=$BASE/latest/download/manifest.plist" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Read bundle version
+        id: ver
+        run: |
+          set -euo pipefail
+          V=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' ios/App/App/Info.plist 2>/dev/null || echo "1.0.0")
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+      - name: Generate itms-services manifest
+        env:
+          IPA_URL: ${{ steps.url.outputs.ipa }}
+          MANIFEST_URL: ${{ steps.url.outputs.manifest }}
+          BUNDLE_ID: ${{ env.BUNDLE_ID }}
+          BUNDLE_VERSION: ${{ steps.ver.outputs.version }}
+          APP_TITLE: ${{ env.APP_TITLE }}
+        run: node scripts/make-itms-manifest.mjs
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SleepSensor-ios-adhoc
+          path: |
+            dist/SleepSensor-adhoc.ipa
+            dist/manifest.plist
+          if-no-files-found: error
+
+      - name: Attach to GitHub Release
+        if: ${{ github.ref_type == 'tag' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/SleepSensor-adhoc.ipa
+            dist/manifest.plist
+          generate_release_notes: true
