@@ -14,7 +14,7 @@
  *               network-first (falling back to cache) for everything else
  */
 
-const CACHE_NAME = 'sleepsensor-v3';
+const CACHE_NAME = 'sleepsensor-v4';
 
 const APP_SHELL = [
   '/',
@@ -86,7 +86,9 @@ self.addEventListener('fetch', (event) => {
       url.pathname.startsWith('/css/') ||
       url.pathname.startsWith('/assets/');
     if (isShell || request.mode === 'navigate') {
-      event.respondWith(cacheFirst(request, request.mode === 'navigate'));
+      // Changed to networkFirst to ensure fresh files are served when online,
+      // avoiding the aggressive caching problem.
+      event.respondWith(networkFirst(request));
       return;
     }
   }
