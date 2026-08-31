@@ -1159,8 +1159,10 @@ if (document.readyState === 'loading') {
   app.init();
 }
 
-// Register service worker
-if ('serviceWorker' in navigator) {
+// Register service worker — web / PWA only. Inside the Capacitor native shell
+// the app is served from the bundle and a SW just adds a stale-cache layer.
+const _isNative = !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform());
+if ('serviceWorker' in navigator && !_isNative) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js').catch(err => {
       console.warn('SW registration failed:', err);

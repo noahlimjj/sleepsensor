@@ -8,23 +8,28 @@
     "test": "node tests/run-all.mjs",
     "test:browser": "node tests/browser-integration.mjs",
     "test:ui": "node tests/frontend-ui.mjs && node tests/frontend-edge.mjs && node tests/frontend-stress.mjs && node tests/frontend-auth.mjs",
+    "test:cap": "node tests/cap-config.mjs",
     "train:fetch": "bash training/fetch-data.sh && bash training/fetch-more.sh",
     "train:data": "node training/extract-features.mjs --aug 2",
     "train": "node training/train.mjs",
     "train:cnn": "node --max-old-space-size=4096 training/train-cnn.mjs --aug 2",
-    "build": "node -e \"console.log('static site — nothing to build')\"",
+    "build": "node scripts/build-web.mjs",
+    "build:web": "node scripts/build-web.mjs",
     "cap:setup": "bash scripts/setup-capacitor.sh",
     "cap:sync": "npx cap sync",
     "cap:ios": "npx cap open ios",
     "cap:android": "npx cap open android"
   },
   "license": "MIT",
-  "devDependencies": {
+  "dependencies": {
     "@capacitor/android": "^6.1.2",
     "@capacitor/app": "^6.0.1",
-    "@capacitor/cli": "^6.1.2",
     "@capacitor/core": "^6.1.2",
     "@capacitor/device": "^6.0.1",
-    "@capacitor/ios": "^6.1.2"
+    "@capacitor/ios": "^6.1.2",
+    "@sleepsensor/background-recorder": "file:plugins/background-recorder"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.1.2"
   }
 }

@@ -1,0 +1,29 @@
+{
+  "name": "@sleepsensor/background-recorder",
+  "version": "1.0.0",
+  "description": "Keeps SleepSensor recording while the screen is locked (iOS AVAudioSession + Android foreground service).",
+  "main": "dist/plugin.cjs.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/esm/index.d.ts",
+  "unpkg": "dist/plugin.js",
+  "license": "MIT",
+  "files": [
+    "android/src/main/",
+    "android/build.gradle",
+    "dist/",
+    "ios/Sources/",
+    "SleepsensorBackgroundRecorder.podspec"
+  ],
+  "keywords": ["capacitor", "plugin", "native"],
+  "capacitor": {
+    "ios": {
+      "src": "ios"
+    },
+    "android": {
+      "src": "android"
+    }
+  },
+  "peerDependencies": {
+    "@capacitor/core": "^6.0.0"
+  }
+}

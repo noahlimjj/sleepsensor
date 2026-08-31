@@ -2,9 +2,13 @@ tests
 docs
 training
 native
+plugins
 scripts
 ios
 android
+www
+dist
+.github
 BACKEND_AGENT_PROMPT.md
 capacitor.config.json
 node_modules

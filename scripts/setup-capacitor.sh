@@ -1,51 +1,42 @@
 #!/usr/bin/env bash
-# One-shot Capacitor setup for SleepSensor. Adds the iOS + Android projects and
-# copies the native BackgroundRecorder plugin + manifest/plist changes into place.
+# One-shot Capacitor setup for SleepSensor.
 #
-#   npm install            # first, to get @capacitor/* dev deps
+#   npm install                 # get deps + link the local plugin
 #   bash scripts/setup-capacitor.sh
 #
-# Re-run safe: it re-copies the native files (does not re-add existing platforms).
+# The native background-recording code ships as a local Capacitor plugin
+# (plugins/background-recorder) so `npx cap sync` wires it into both platforms
+# automatically — no manual Xcode / Gradle edits. The only thing a plugin can't
+# contribute is the app's Info.plist keys; scripts/prepare-ios.mjs adds those.
+#
+# Re-run safe.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-have() { command -v "$1" >/dev/null 2>&1; }
+echo "▸ building web assets -> www/"
+node scripts/build-web.mjs
 
-echo "▸ capacitor sync (web assets)"
-npx cap copy || true
-
-# ---------- iOS ----------
-if [ "$(uname)" = "Darwin" ]; then
-  if [ ! -d ios ]; then
-    echo "▸ adding iOS platform"
-    npx cap add ios
-  fi
-  DEST="ios/App/App"
-  echo "▸ copying iOS plugin -> $DEST"
-  cp native/ios/BackgroundRecorder.swift "$DEST/"
-  cp native/ios/BackgroundRecorder.m "$DEST/"
-  echo "  ! merge native/ios/Info.plist.additions.xml into $DEST/Info.plist (see docs/CAPACITOR.md)"
-  npx cap sync ios || true
-else
-  echo "▸ skipping iOS (not macOS)"
-fi
-
-# ---------- Android ----------
 if [ ! -d android ]; then
   echo "▸ adding Android platform"
   npx cap add android
 fi
-PKG_DIR="android/app/src/main/java/app/sleepsensor/monitor"
-mkdir -p "$PKG_DIR"
-echo "▸ copying Android plugin -> $PKG_DIR"
-cp native/android/BackgroundRecorderPlugin.java "$PKG_DIR/"
-cp native/android/RecordingService.java "$PKG_DIR/"
-echo "  ! add 'registerPlugin(BackgroundRecorderPlugin.class);' to MainActivity.onCreate"
-echo "  ! merge native/android/AndroidManifest.additions.xml into android/app/src/main/AndroidManifest.xml"
-npx cap sync android || true
+
+if [ "$(uname)" = "Darwin" ] && [ ! -d ios ]; then
+  echo "▸ adding iOS platform"
+  npx cap add ios || true   # pod install needs CocoaPods + Xcode
+fi
+
+if [ -d ios ]; then
+  echo "▸ patching iOS Info.plist"
+  node scripts/prepare-ios.mjs
+fi
+
+echo "▸ cap sync"
+npx cap sync
 
 echo
-echo "Done. Next:"
-echo "  - iOS:     npx cap open ios     (then finish Info.plist, set signing, run)"
-echo "  - Android: npx cap open android (then finish MainActivity + manifest, run)"
-echo "  Full checklist: docs/CAPACITOR.md"
+echo "Done. Build:"
+echo "  Android:  cd android && ./gradlew assembleDebug   (apk in app/build/outputs/apk/debug/)"
+echo "  iOS:      cd ios/App && pod install && open App.xcworkspace"
+echo
+echo "Or just push — .github/workflows/build.yml builds both in CI."

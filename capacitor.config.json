@@ -1,7 +1,7 @@
 {
   "appId": "app.sleepsensor.monitor",
   "appName": "SleepSensor",
-  "webDir": ".",
+  "webDir": "www",
   "server": {
     "androidScheme": "https",
     "iosScheme": "https"
@@ -9,7 +9,7 @@
   "ios": {
     "backgroundColor": "#0a0a0a",
     "contentInset": "always",
-    "limitsNavigationsToAppBoundDomains": true
+    "limitsNavigationsToAppBoundDomains": false
   },
   "android": {
     "backgroundColor": "#0a0a0a",
