@@ -20,8 +20,9 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap">
 
-  <!-- TensorFlow.js (for classifier) -->
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js" defer></script>
+  <!-- The classifier is a pure-JS MLP (js/model-weights.js) — no TensorFlow.js
+       needed at runtime. Re-add the CDN script only if a CNN model is shipped
+       (see js/classifier.js CNN_ENABLED). -->
 
   <!-- App styles -->
   <link rel="stylesheet" href="/css/index.css">

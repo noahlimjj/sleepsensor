@@ -45,12 +45,15 @@ export class Classifier {
   }
 
   async load() {
-    if (this._tf) {
+    // The feature MLP + heuristic need nothing to warm up. TensorFlow.js is only
+    // touched for the optional CNN path (CNN_ENABLED), and only if `tf` is on
+    // the page.
+    if (CNN_ENABLED && this._tf) {
       try {
         await this._tf.ready();
         await this._loadCnn();
       } catch (_) {
-        /* the feature-MLP / heuristic path does not need tf */
+        /* fall back to the feature MLP */
       }
     }
     this.ready = true;
