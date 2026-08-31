@@ -19,12 +19,17 @@
 
 import { WakeLock } from './wake-lock.js';
 import { Classifier } from './classifier.js';
+import { HmmSmoother } from './smoothing.js';
+
+const SMOOTH_CLASSES = ['quiet', 'snoring', 'bruxism', 'noise'];
 
 const TARGET_SAMPLE_RATE = 16000;
 const POSITIVE_TYPES = new Set(['snoring', 'bruxism', 'noise']);
 
-// event debounce tuning
-const CONFIRM_COUNT = 3; // consecutive positive windows to confirm an event
+// event debounce tuning. HMM smoothing (smoothing.js) already removes
+// single-window flicker, so the debounce only needs to enforce a minimum
+// event duration and a clean tail.
+const CONFIRM_COUNT = 2; // consecutive smoothed positives to confirm an event
 const CONFIRM_WINDOW_MS = 6000; // positives must be within this gap
 const END_NEGATIVE_STREAK = 2; // consecutive negatives that end an event
 const CLIP_PAD_SEC = 5; // seconds of audio kept either side of an event
@@ -53,6 +58,7 @@ export class AudioEngine {
     this.onStatusChange = onStatusChange || (() => {});
 
     this.wakeLock = new WakeLock();
+    this._smoother = new HmmSmoother({ classes: SMOOTH_CLASSES });
 
     this.status = 'idle';
     this._recording = false;
@@ -250,6 +256,7 @@ export class AudioEngine {
       this._highlights = [];
       this._tally = freshTally();
       this._suspendedSince = 0;
+      this._smoother.reset();
 
       await this.wakeLock.acquire();
       document.addEventListener('visibilitychange', this._onVisibility);
@@ -334,10 +341,12 @@ export class AudioEngine {
     this._lastAudioAt = Date.now();
 
     switch (msg.type) {
-      case 'silence':
+      case 'silence': {
+        const smoothed = this._smoother.push({ quiet: 1 });
         this._considerHighlight(msg, { type: 'silence', confidence: 0 });
-        this._handleClassification({ type: 'silence', confidence: 0 }, msg);
+        this._handleClassification(smoothed, msg);
         break;
+      }
       case 'spectrogram': {
         let result;
         try {
@@ -348,10 +357,13 @@ export class AudioEngine {
           });
         } catch (err) {
           console.warn('[AudioEngine] classify failed:', err);
-          result = { type: 'other', confidence: 0 };
+          result = { type: 'other', confidence: 0, scores: {} };
         }
-        this._considerHighlight(msg, result);
-        this._handleClassification(result, msg);
+        // temporal smoothing (HMM forward filter) -> stable event decisions
+        const smoothed = this._smoother.push(result.scores || {});
+        this._lastRaw = result;
+        this._considerHighlight(msg, result); // highlights use the raw per-window label
+        this._handleClassification(smoothed, msg);
         break;
       }
       case 'audio-clip':
@@ -366,8 +378,17 @@ export class AudioEngine {
   // "noise" when it is simply above the ambient floor, or negative.
   _effectiveType(result, msg) {
     const min = this.classifier?.minConfidence ?? 0.35;
-    if ((result.type === 'snoring' || result.type === 'bruxism') && result.confidence >= min) {
-      return { type: result.type, confidence: result.confidence };
+    // bruxism is the lower-precision class — hold it to a higher bar so a hissy
+    // fan or distant traffic isn't logged as teeth grinding.
+    if (result.type === 'snoring' && result.confidence >= min) {
+      return { type: 'snoring', confidence: result.confidence };
+    }
+    if (result.type === 'bruxism' && result.confidence >= Math.max(min, 0.5)) {
+      return { type: 'bruxism', confidence: result.confidence };
+    }
+    // a confident quiet/silence verdict wins even if the raw level looks loud
+    if ((result.type === 'quiet' || result.type === 'silence') && result.confidence >= 0.6) {
+      return null;
     }
     const loud = (msg.rms || 0) >= Math.max(LOUD_NOISE_RMS, this.noiseGate * 3);
     if (result.type === 'noise' && result.confidence >= 0.4 && loud) {

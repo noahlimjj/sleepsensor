@@ -50,14 +50,15 @@ const QUIET = (t) => [
 export async function run() {
   section('audio-engine.js — debounce, noise, highlights, dB');
 
-  // --- 3 positives confirm exactly one event, with a peak dB ---
+  // --- 2 consecutive smoothed positives confirm exactly one event ---
   {
     const { engine, calls } = makeEngine();
     engine._handleClassification(...W('snoring', 0.7, 2));
+    eq(calls.events.length, 0, 'no event after 1 positive');
     engine._handleClassification(...W('snoring', 0.7, 4));
-    eq(calls.events.length, 0, 'no event after 2 positives');
+    eq(calls.events.length, 1, 'event confirmed on the 2nd consecutive positive');
     engine._handleClassification(...W('snoring', 0.7, 6));
-    eq(calls.events.length, 1, 'event confirmed on the 3rd positive');
+    eq(calls.events.length, 1, 'still one event while it continues');
     eq(calls.events[0].type, 'snoring', 'type snoring');
     ok(typeof calls.events[0].peakDb === 'number' && calls.events[0].peakDb < 0, 'event carries a peak dBFS');
     ok(calls.events[0].severity === 'moderate', 'confidence 0.7 -> moderate');
@@ -130,6 +131,34 @@ export async function run() {
     eq(calls.clips.length, 1, 'clip saved');
     eq(calls.clips[0].clipType, 'event', 'event clip tagged clipType=event');
     ok(calls.updated.some((u) => u.hasClip === true), 'event flagged hasClip');
+  }
+
+  // --- HMM smoothing: routed through _onWorkletMessage, one spurious window
+  //     must not create an event; a sustained stream must ---
+  {
+    const { engine, calls } = makeEngine();
+    let next = { quiet: 0.9, noise: 0.1 };
+    let rms = 0.001;
+    engine.classifier.classify = () => ({ type: 'quiet', confidence: 0.9, scores: next });
+    const send = () =>
+      engine._onWorkletMessage({
+        data: { data: new Float32Array(8), type: 'spectrogram', timestamp: (engine._t = (engine._t || 0) + 2), rms, peak: rms * 1.5 },
+      });
+
+    for (let i = 0; i < 4; i++) send();
+    next = { bruxism: 0.6, snoring: 0.2, noise: 0.2 }; // one odd window
+    rms = 0.2;
+    send();
+    next = { quiet: 0.9, noise: 0.1 };
+    rms = 0.001;
+    for (let i = 0; i < 3; i++) send();
+    eq(calls.events.length, 0, 'one spurious classification does not survive smoothing');
+
+    next = { snoring: 0.85, noise: 0.15 };
+    rms = 0.15;
+    for (let i = 0; i < 6; i++) send();
+    eq(calls.events.length, 1, 'a sustained snoring stream produces one event');
+    eq(calls.events[0].type, 'snoring', 'smoothed event type is snoring');
   }
 
   // --- live dB meter ---

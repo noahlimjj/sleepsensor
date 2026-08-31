@@ -2,7 +2,9 @@
 import { summary } from './lib.mjs';
 import { run as dsp } from './test-dsp.mjs';
 import { run as features } from './test-features.mjs';
+import { run as smoothing } from './test-smoothing.mjs';
 import { run as model } from './test-model.mjs';
+import { run as cnn } from './test-cnn.mjs';
 import { run as classifier } from './test-classifier.mjs';
 import { run as storage } from './test-storage.mjs';
 import { run as wav } from './test-wav.mjs';
@@ -14,7 +16,9 @@ console.log('='.repeat(48));
 try {
   await dsp();
   await features();
+  await smoothing();
   await model();
+  await cnn();
   await classifier();
   await storage();
   await wav();

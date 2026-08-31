@@ -18,3 +18,8 @@ training/_snoredet/
 training/features*.json
 training/*.wav
 _snoredet/
+training/node_modules/
+training/package-lock.json
+
+# experimental CNN (not shipped unless training/train-cnn.mjs produces a good one)
+# js/model-cnn/

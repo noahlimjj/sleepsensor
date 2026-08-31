@@ -47,6 +47,7 @@ export async function run() {
   const c = new Classifier();
   await c.load();
   ok(c.ready, 'load() resolves and marks ready');
+  ok(c.usingModel === true || c.usingModel === 'cnn' || c.usingModel === false, `model path: ${c.usingModel}`);
 
   // --- API contract ---
   const r = c.classify(new Float32Array(128 * 64).fill(0.3), { rms: 0.1, peak: 0.2, zcr: 0.1 });
