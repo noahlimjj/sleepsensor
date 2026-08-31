@@ -7,6 +7,7 @@
   "scripts": {
     "test": "node tests/run-all.mjs",
     "test:browser": "node tests/browser-integration.mjs",
+    "test:ui": "node tests/frontend-ui.mjs && node tests/frontend-edge.mjs",
     "train:fetch": "bash training/fetch-data.sh && bash training/fetch-more.sh",
     "train:data": "node training/extract-features.mjs --aug 2",
     "train": "node training/train.mjs",

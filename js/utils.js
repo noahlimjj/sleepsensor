@@ -164,3 +164,36 @@ export function toPercent(part, total) {
 export function lerp(a, b, t) {
   return a + (b - a) * t;
 }
+
+/**
+ * Trace a rounded rectangle path, clamping every value so a canvas that is
+ * momentarily 0-sized (hidden screen) can never throw "Radius value is negative".
+ * Returns false if the rect has no area (caller should skip the fill/stroke).
+ */
+export function roundRectPath(ctx, x, y, w, h, r) {
+  w = Math.max(0, w);
+  h = Math.max(0, h);
+  if (w === 0 || h === 0) return false;
+  const rr = Math.max(0, Math.min(r || 0, w / 2, h / 2));
+  if (typeof ctx.roundRect === 'function') {
+    ctx.roundRect(x, y, w, h, rr);
+  } else {
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
+  }
+  return true;
+}
+
+/**
+ * True when an element is actually laid out (has a non-zero box). Canvas
+ * renderers bail early when their container is display:none.
+ */
+export function isVisible(el) {
+  if (!el) return false;
+  const r = el.getBoundingClientRect();
+  return r.width > 0 && r.height > 0;
+}

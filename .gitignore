@@ -32,3 +32,4 @@ package-lock.json
 .gradle/
 *.xcworkspace/xcuserdata/
 DerivedData/
+tests/fixtures/*.png

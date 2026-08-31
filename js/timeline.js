@@ -1,36 +1,57 @@
 /* ============================================================
-   SleepSensor — Canvas Sleep Timeline (Modern)
+   SleepSensor — Canvas Sleep Timeline
    Sleek, rounded horizontal bar timeline
    ============================================================ */
 
-import { formatTime } from './utils.js';
+import { formatTime, roundRectPath, isVisible } from './utils.js';
+
+const COLORS = {
+  snoring: '#ffffff',
+  bruxism: '#888888',
+  noise: '#555555',
+};
 
 export class Timeline {
   constructor(canvas) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.dpr = window.devicePixelRatio || 1;
-    this._resize();
+    this._last = null; // { session, events } — for re-render on resize/show
 
-    this._resizeObserver = new ResizeObserver(() => this._resize());
-    this._resizeObserver.observe(canvas.parentElement);
+    this._resizeObserver = new ResizeObserver(() => {
+      this._resize();
+      if (this._last) this.render(this._last.session, this._last.events);
+    });
+    if (canvas.parentElement) this._resizeObserver.observe(canvas.parentElement);
+    this._resize();
   }
 
   _resize() {
-    const rect = this.canvas.parentElement.getBoundingClientRect();
-    this.width = rect.width - 32; // padding
+    const rect = this.canvas.parentElement
+      ? this.canvas.parentElement.getBoundingClientRect()
+      : { width: 0 };
+    this.width = Math.max(0, rect.width - 32);
     this.height = 70;
+    if (this.width === 0) return;
     this.canvas.width = this.width * this.dpr;
     this.canvas.height = this.height * this.dpr;
     this.canvas.style.width = `${this.width}px`;
     this.canvas.style.height = `${this.height}px`;
+    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
     this.ctx.scale(this.dpr, this.dpr);
   }
 
   render(session, events) {
+    if (!session) return;
+    this._last = { session, events: events || [] };
+    if (!isVisible(this.canvas.parentElement)) return; // hidden screen — render on show
+    this._resize();
+
     const ctx = this.ctx;
     const w = this.width;
     const h = this.height;
+    if (w <= 0 || h <= 0) return;
+
     const barY = 24;
     const barH = 16;
     const radius = barH / 2;
@@ -38,65 +59,51 @@ export class Timeline {
 
     ctx.clearRect(0, 0, w, h);
     ctx.imageSmoothingEnabled = true;
-
     if (!totalMs || totalMs <= 0) return;
 
-    // Background bar (quiet) — soft dark pill
+    // background pill (quiet)
     ctx.fillStyle = '#222222';
     ctx.beginPath();
-    ctx.roundRect(0, barY, w, barH, radius);
-    ctx.fill();
+    if (roundRectPath(ctx, 0, barY, w, barH, radius)) ctx.fill();
 
-    // Event segments
-    const colors = {
-      snoring: '#ffffff',
-      bruxism: '#888888',
-      noise: '#555555',
-    };
-
+    // event segments
     for (const event of events) {
       const x = Math.max(0, Math.min(w, ((event.startTime - session.startTime) / totalMs) * w));
-      let eventW = Math.max(4, ((event.endTime - event.startTime) / totalMs) * w);
-      if (x + eventW > w) eventW = Math.max(0, w - x);
-
-      ctx.fillStyle = colors[event.type] || '#cccccc';
+      let eventW = Math.max(3, ((event.endTime - event.startTime) / totalMs) * w);
+      if (x + eventW > w) eventW = w - x;
+      if (eventW <= 0) continue;
+      ctx.fillStyle = COLORS[event.type] || '#cccccc';
       ctx.beginPath();
-      // Draw sub-pills for each event to keep it round
-      ctx.roundRect(x, barY, eventW, barH, Math.min(radius, eventW / 2));
-      ctx.fill();
+      if (roundRectPath(ctx, x, barY, eventW, barH, radius)) ctx.fill();
     }
 
-    // Time labels — smooth modern font
+    // start / end labels
     ctx.fillStyle = '#888888';
-    ctx.font = '500 11px "Inter", sans-serif';
+    ctx.font = '500 11px "Inter", system-ui, sans-serif';
     ctx.textBaseline = 'bottom';
     ctx.textAlign = 'left';
     ctx.fillText(formatTime(session.startTime), 4, barY - 6);
     ctx.textAlign = 'right';
     ctx.fillText(formatTime(session.endTime), w - 4, barY - 6);
 
-    // Hour markers
+    // hour ticks
     const startHour = new Date(session.startTime);
     startHour.setMinutes(0, 0, 0);
     let marker = startHour.getTime() + 3600000;
-
     ctx.strokeStyle = '#333333';
     ctx.lineWidth = 1;
-
     while (marker < session.endTime) {
       const x = ((marker - session.startTime) / totalMs) * w;
       if (x > 30 && x < w - 30) {
-        // Vertical tick
         ctx.beginPath();
         ctx.moveTo(x, barY + barH + 4);
         ctx.lineTo(x, barY + barH + 8);
         ctx.stroke();
-
-        // Hour label
         ctx.fillStyle = '#666666';
-        ctx.font = '400 10px "Inter", sans-serif';
+        ctx.font = '400 10px "Inter", system-ui, sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText(formatTime(marker), x, barY + barH + 20);
+        ctx.textBaseline = 'top';
+        ctx.fillText(formatTime(marker), x, barY + barH + 12);
       }
       marker += 3600000;
     }

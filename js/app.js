@@ -3,9 +3,10 @@
    Handles screen routing, UI state, and wires everything together
    ============================================================ */
 
-import { formatDuration, formatTimer, formatTime, formatDate, formatBytes, toDateKey, getMonthAbbr, getDayOfMonth, throttle, toPercent } from './utils.js';
+import { formatDuration, formatTimer, formatTime, formatDate, formatBytes, toDateKey, getMonthAbbr, getDayOfMonth, throttle, toPercent, roundRectPath } from './utils.js';
 import { Timeline } from './timeline.js';
 import { DonutChart, TrendChart } from './charts.js';
+import { SessionRecovery } from './session-recovery.js';
 
 class App {
   constructor() {
@@ -59,13 +60,25 @@ class App {
       this.classifier = new Classifier();
       await this.classifier.load();
 
+      // Finalise any session left open by a crash / OS kill / dead battery
+      try {
+        const recovered = await new SessionRecovery(this.storage).recoverStale();
+        if (recovered.length) {
+          this._banner(
+            `Last night's recording ended early — we saved what was captured (${recovered.length} session${recovered.length > 1 ? 's' : ''}).`
+          );
+        }
+      } catch (e) {
+        console.warn('recovery check failed:', e);
+      }
+
       // Initialize audio engine
       this.engine = new AudioEngine({
         classifier: this.classifier,
         storage: this.storage,
         onEnergy: throttle((rms) => this._onEnergy(rms), 16),
         onEvent: (event) => this._onEvent(event),
-        onStatusChange: (status, error) => this._onStatusChange(status, error),
+        onStatusChange: (status, info, extra) => this._onStatusChange(status, info, extra),
       });
 
       // Bind UI events
@@ -76,17 +89,19 @@ class App {
       // Show app
       this._hideSplash();
 
-      // Load latest report if exists
-      this._loadLatestReport();
+      // Load latest report + history (charts self-guard until their screen shows)
+      await this._loadLatestReport();
       this._loadHistory();
       this._updateStorageUsage();
-      
-      if (this.engine) {
+
+      // restore the saved mic sensitivity
+      try {
+        const saved = await this.storage.getSetting('sensitivity', 0.5);
         const slider = document.getElementById('setting-sensitivity');
-        const desc = this.engine.describeSensitivity(slider.value / 100);
-        document.getElementById('setting-sensitivity-desc').textContent = desc.level;
-        document.getElementById('setting-sensitivity-detail').textContent = desc.description;
-      }
+        if (slider) slider.value = Math.round(saved * 100);
+        this.engine.setSensitivity(saved);
+      } catch (_) { /* defaults are fine */ }
+      this._syncSensitivityLabel();
 
     } catch (err) {
       console.error('App init failed:', err);
@@ -119,9 +134,20 @@ class App {
       screen.classList.toggle('active', screen.id === `screen-${name}`);
     });
 
-    // Trigger lazy loads
+    // Trigger lazy loads + re-render canvases now that the screen has a size
     if (name === 'history') this._loadHistory();
     if (name === 'settings') this._updateStorageUsage();
+    if (name === 'report' && this.currentSessionId) {
+      requestAnimationFrame(() => this._loadReport(this.currentSessionId));
+    }
+  }
+
+  _banner(text) {
+    const banner = document.getElementById('status-banner');
+    const t = document.getElementById('status-banner-text');
+    if (!banner || !t) return;
+    t.textContent = text;
+    banner.removeAttribute('hidden');
   }
 
   _hideSplash() {
@@ -167,8 +193,9 @@ class App {
       document.getElementById('live-db-meter').removeAttribute('hidden');
 
       const guidance = document.getElementById('background-guidance');
-      guidance.textContent = this.engine.backgroundGuidance();
-      guidance.removeAttribute('hidden');
+      const g = this.engine.backgroundGuidance();
+      guidance.textContent = g && g.text ? g.text : '';
+      guidance.hidden = !guidance.textContent;
 
       // Reset stats
       document.getElementById('stat-snoring-count').textContent = '0';
@@ -196,7 +223,7 @@ class App {
     try {
       const summary = await this.engine.stop();
       this.isRecording = false;
-      this.currentSessionId = summary.sessionId;
+      this.currentSessionId = summary ? summary.sessionId : this.currentSessionId;
 
       // Update UI
       document.getElementById('app').classList.remove('recording');
@@ -206,18 +233,27 @@ class App {
       document.getElementById('waveform-overlay').classList.remove('hidden');
       document.getElementById('live-db-meter').setAttribute('hidden', '');
       document.getElementById('background-guidance').setAttribute('hidden', '');
+      document.getElementById('status-banner').setAttribute('hidden', '');
 
-      // Stop elapsed timer
       clearInterval(this.elapsedInterval);
       this.elapsedInterval = null;
-
-      // Stop waveform
       this._stopWaveformAnimation();
 
-      // Load report for this session
-      await this._loadReport(summary.sessionId);
-      this._showScreen('report');
+      if (summary && summary.stopReason && summary.stopReason !== 'user') {
+        const why =
+          summary.stopReason === 'max-duration'
+            ? 'Recording auto-stopped after 14 hours.'
+            : summary.stopReason === 'storage-full'
+            ? 'Recording stopped — device storage is full. Everything captured was saved.'
+            : `Recording stopped (${summary.stopReason}).`;
+        this._banner(why);
+      }
 
+      // show the report screen first (so canvases have a size), then fill it
+      if (this.currentSessionId) {
+        this._showScreen('report');
+        await this._loadReport(this.currentSessionId);
+      }
     } catch (err) {
       console.error('Failed to stop recording:', err);
     }
@@ -266,27 +302,22 @@ class App {
       ctx.stroke();
 
       // Bars
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
       for (let i = 0; i < barCount; i++) {
         const amplitude = Math.min(data[i] * 8, 1);
         const barH = Math.max(2, amplitude * (h * 0.4));
-
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
         ctx.beginPath();
-        ctx.roundRect(
-          i * barWidth + 1,
-          centerY - barH,
-          Math.max(1, barWidth - 2),
-          barH * 2,
-          4
-        );
-        ctx.fill();
+        if (roundRectPath(ctx, i * barWidth + 1, centerY - barH, Math.max(1, barWidth - 2), barH * 2, 3)) {
+          ctx.fill();
+        }
       }
 
       if (this.engine) {
         const level = this.engine.getLevel();
-        if (level && level.dbFS > -Infinity) {
-          const dbStr = `${Math.round(level.dbFS)} dBFS · ~${Math.round(level.spl)} dB`;
-          document.getElementById('db-value').textContent = dbStr;
+        const el = document.getElementById('db-value');
+        if (el && level) {
+          const fs = Math.max(-99, Math.round(level.dbFS));
+          el.textContent = `${fs} dBFS · ~${Math.round(level.spl)} dB`;
         }
       }
 
@@ -338,10 +369,11 @@ class App {
       iconEl.textContent = '🔊';
     }
 
-    if (event.type === 'noise' && event.peakDb) {
-      confEl.textContent = `~${Math.round(event.peakDb)} dB`;
+    if (event.type === 'noise') {
+      const d = event.peakDb ?? -30;
+      confEl.textContent = d > -6 ? 'Very loud' : d > -18 ? 'Loud' : 'Moderate';
     } else {
-      confEl.textContent = `${Math.round(event.confidence * 100)}%`;
+      confEl.textContent = `${Math.round((event.confidence || 0) * 100)}% sure`;
     }
 
     // Set style
@@ -361,23 +393,37 @@ class App {
     }, 3000);
   }
 
-  _onStatusChange(status, error) {
+  _onStatusChange(status, info, extra) {
     const label = document.getElementById('record-btn-label');
     const banner = document.getElementById('status-banner');
     const bannerText = document.getElementById('status-banner-text');
 
     if (status === 'error') {
-      label.textContent = 'Microphone error';
-      bannerText.textContent = error || 'Microphone error';
+      label.textContent = 'Microphone unavailable';
+      bannerText.textContent = info || 'Could not access the microphone.';
       banner.removeAttribute('hidden');
       this.isRecording = false;
       document.getElementById('app').classList.remove('recording');
+      document.querySelector('.record-btn-icon--mic')?.removeAttribute('hidden');
+      document.querySelector('.record-btn-icon--stop')?.setAttribute('hidden', '');
     } else if (status === 'requesting') {
-      label.textContent = 'Requesting microphone access...';
-    } else if (status === 'interrupted' || status === 'stalled') {
-      bannerText.textContent = 'Audio processing interrupted by OS. Please keep the app open.';
+      label.textContent = 'Requesting microphone access…';
+    } else if (status === 'interrupted') {
+      bannerText.textContent = info || 'Audio interrupted — it will resume automatically.';
+      banner.removeAttribute('hidden');
+    } else if (status === 'stalled') {
+      bannerText.textContent = info || 'Audio stalled — keep the app open.';
       banner.removeAttribute('hidden');
     } else if (status === 'recording') {
+      label.textContent = 'Tap to stop monitoring';
+      const warnings = (extra && extra.warnings) || [];
+      if (warnings.length) {
+        bannerText.textContent = warnings[0];
+        banner.removeAttribute('hidden');
+      } else {
+        banner.setAttribute('hidden', '');
+      }
+    } else if (status === 'idle') {
       banner.setAttribute('hidden', '');
     }
   }
@@ -405,8 +451,9 @@ class App {
     document.getElementById('report-empty').setAttribute('hidden', '');
     document.getElementById('report-content').removeAttribute('hidden');
 
-    // Date
-    document.getElementById('report-date').textContent = formatDate(session.startTime);
+    // Date (+ note if this night was recovered after a crash)
+    document.getElementById('report-date').textContent =
+      formatDate(session.startTime) + (session.recovered ? ' · ended unexpectedly' : '');
 
     // Summary cards
     const totalSleep = session.totalDuration || ((session.endTime - session.startTime) / 1000);
@@ -426,11 +473,11 @@ class App {
     // Severity breakdown
     this._renderSeverityBars(events);
 
-    // Audio clips
-    const clips = await this.storage.getClipsBySession(sessionId);
+    // Event audio clips (highlight clips are shown in the Loudest Moments section)
+    const clips = await this.storage.getClipsBySessionType(sessionId, 'event');
     this._renderClips(clips, events);
 
-    // Highlights
+    // Loudest moments
     const highlights = await this.storage.getHighlightsBySession(sessionId);
     const highlightClips = await this.storage.getClipsBySessionType(sessionId, 'highlight');
     this._renderHighlights(highlights, highlightClips);
@@ -454,13 +501,11 @@ class App {
     container.innerHTML = highlights.map(h => {
       const clip = clipMap.get(h.id);
       const time = formatTime(h.timestamp);
-      let label = h.classifiedAs;
-      if (label === 'unknown') label = 'Unknown Noise';
-      else if (label === 'snoring') label = 'Snoring';
-      else if (label === 'bruxism') label = 'Grinding';
-      else if (label === 'noise') label = 'Noise';
-      
-      const db = h.peakDb ? `~${Math.round(h.peakDb)} dB` : '';
+      const label =
+        { snoring: 'Snoring', bruxism: 'Grinding', noise: 'Noise', unknown: 'Unknown sound' }[
+          h.classifiedAs
+        ] || 'Sound';
+      const db = typeof h.db === 'number' ? `${Math.round(h.db)} dB` : '';
 
       return `
         <div class="highlight-card">
@@ -521,30 +566,34 @@ class App {
     // Map events by ID for lookup
     const eventMap = new Map(events.map(e => [e.id, e]));
 
+    const labels = { snoring: 'Snoring', bruxism: 'Grinding', noise: 'Noise' };
+    const icons = { snoring: '😴', bruxism: '😬', noise: '🔊' };
+
     container.innerHTML = clips.map(clip => {
       const event = eventMap.get(clip.eventId) || {};
-      const type = event.type || 'snoring';
-      const icon = type === 'snoring' ? '😴' : (type === 'bruxism' ? '😬' : '🔊');
+      const type = event.type || 'noise';
+      const icon = icons[type] || '🔊';
       const time = formatTime(clip.timestamp);
       const duration = clip.duration ? `${clip.duration.toFixed(1)}s` : '--';
-      
-      let confidence = '';
-      if (type === 'noise' && event.peakDb) {
-        confidence = `~${Math.round(event.peakDb)} dB`;
-      } else if (event.confidence) {
-        confidence = `${Math.round(event.confidence * 100)}% confidence`;
+
+      let meta = time;
+      if (type === 'noise') {
+        const d = event.peakDb ?? -30;
+        meta += ` · ${d > -6 ? 'Very loud' : d > -18 ? 'Loud' : 'Moderate'}`;
+      } else if (typeof event.confidence === 'number') {
+        meta += ` · ${Math.round(event.confidence * 100)}% sure`;
       }
 
       return `
         <div class="clip-card clip-card--${type}" data-clip-id="${clip.id}">
-          <button class="clip-play-btn" data-clip-id="${clip.id}" aria-label="Play clip">
+          <button class="clip-play-btn" data-clip-id="${clip.id}" aria-label="Play ${labels[type] || 'clip'} clip">
             <svg viewBox="0 0 24 24" fill="currentColor">
               <polygon points="6,4 20,12 6,20"/>
             </svg>
           </button>
           <div class="clip-info">
-            <div class="clip-type">${icon} ${type === 'snoring' ? 'Snoring' : (type === 'bruxism' ? 'Grinding' : 'Noise')}</div>
-            <div class="clip-meta">${time} · ${confidence}</div>
+            <div class="clip-type">${icon} ${labels[type] || 'Sound'}</div>
+            <div class="clip-meta">${meta}</div>
           </div>
           <span class="clip-duration">${duration}</span>
         </div>
@@ -560,40 +609,43 @@ class App {
     });
   }
 
-  async _playClip(clipId, btnEl) {
-    if (!this.storage) return;
+  _playIcon() {
+    return '<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6,4 20,12 6,20"/></svg>';
+  }
+  _pauseIcon() {
+    return '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>';
+  }
 
-    // Stop current audio if playing
+  _stopCurrentClip() {
     if (this.currentAudio) {
       this.currentAudio.pause();
-      this.currentAudio = null;
-      if (this.currentPlayBtn) {
-        this.currentPlayBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6,4 20,12 6,20"/></svg>';
-      }
-      // If clicking the same button, just stop
-      if (this.currentPlayBtn === btnEl) {
-        this.currentPlayBtn = null;
-        return;
-      }
+      this.currentAudio.onended = null;
+      if (this._currentUrl) URL.revokeObjectURL(this._currentUrl);
+      this._currentUrl = null;
     }
+    if (this.currentPlayBtn) this.currentPlayBtn.innerHTML = this._playIcon();
+    this.currentAudio = null;
+    this.currentPlayBtn = null;
+  }
+
+  async _playClip(clipId, btnEl) {
+    if (!this.storage) return;
+    const wasSame = this.currentPlayBtn === btnEl;
+    this._stopCurrentClip();
+    if (wasSame) return; // toggled off
 
     const clip = await this.storage.getClip(clipId);
     if (!clip || !clip.audioBlob) return;
 
     const url = URL.createObjectURL(clip.audioBlob);
+    this._currentUrl = url;
     this.currentAudio = new Audio(url);
     this.currentPlayBtn = btnEl;
+    btnEl.innerHTML = this._pauseIcon();
 
-    // Update button to pause icon
-    btnEl.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>';
-
-    this.currentAudio.play();
-    this.currentAudio.onended = () => {
-      URL.revokeObjectURL(url);
-      btnEl.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6,4 20,12 6,20"/></svg>';
-      this.currentAudio = null;
-      this.currentPlayBtn = null;
-    };
+    this.currentAudio.onended = () => this._stopCurrentClip();
+    this.currentAudio.onerror = () => this._stopCurrentClip();
+    this.currentAudio.play().catch(() => this._stopCurrentClip());
   }
 
   // ========== HISTORY ==========
@@ -683,27 +735,39 @@ class App {
       `;
     }).join('');
 
-    // Bind click to load report
+    // Bind click to open the report for that session
     container.querySelectorAll('.session-item').forEach(item => {
-      item.addEventListener('click', () => {
-        this._loadReport(item.dataset.sessionId);
-        this._showScreen('report');
+      const open = () => {
+        this.currentSessionId = item.dataset.sessionId;
+        this._showScreen('report'); // re-renders the report on the next frame
+      };
+      item.addEventListener('click', open);
+      item.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          open();
+        }
       });
     });
   }
 
   // ========== SETTINGS ==========
 
+  _syncSensitivityLabel() {
+    const slider = document.getElementById('setting-sensitivity');
+    if (!slider || !this.engine) return;
+    const d = this.engine.describeSensitivity(slider.value / 100);
+    document.getElementById('setting-sensitivity-desc').textContent = d.label;
+    document.getElementById('setting-sensitivity-detail').textContent = d.detail;
+  }
+
   _bindSettings() {
     // Sensitivity slider
     const slider = document.getElementById('setting-sensitivity');
     slider.addEventListener('input', () => {
-      if (this.engine) {
-        this.engine.setSensitivity(slider.value / 100);
-        const desc = this.engine.describeSensitivity(slider.value / 100);
-        document.getElementById('setting-sensitivity-desc').textContent = desc.level;
-        document.getElementById('setting-sensitivity-detail').textContent = desc.description;
-      }
+      if (!this.engine) return;
+      this.engine.setSensitivity(slider.value / 100);
+      this._syncSensitivityLabel();
     });
 
     // Export
@@ -740,7 +804,9 @@ class App {
     try {
       const usage = await this.storage.getStorageUsage();
       const desc = document.getElementById('setting-storage-used');
-      desc.textContent = `${usage.sessions} sessions · ${usage.events} events · ${usage.clips} clips · ${formatBytes(usage.totalBytes || 0)}`;
+      const parts = [`${usage.sessions} session${usage.sessions === 1 ? '' : 's'}`, `${usage.events} events`, `${usage.clips} clips`];
+      if (usage.clips > 0) parts.push(formatBytes(usage.totalBytes || 0));
+      desc.textContent = parts.join(' · ');
     } catch {
       document.getElementById('setting-storage-used').textContent = 'Unable to calculate';
     }
