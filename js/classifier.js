@@ -31,6 +31,11 @@ const MODEL =
 const CLASSES = MODEL ? MODEL.classes : ['quiet', 'snoring', 'bruxism', 'noise'];
 const QUIET_RMS = 0.0018; // hard floor: below this it is silence regardless
 
+// Flip to true only when training/train-cnn.mjs has produced a js/model-cnn/
+// that beats the feature MLP (it did not on the current dataset). Guards a
+// 404 for the model files when no CNN is shipped.
+const CNN_ENABLED = false;
+
 export class Classifier {
   constructor(options = {}) {
     this.minConfidence = options.minConfidence ?? 0.35;
@@ -55,6 +60,7 @@ export class Classifier {
   async _loadCnn() {
     // Optional high-accuracy path: a small CNN over the log-mel spectrogram,
     // exported as a TF.js LayersModel to js/model-cnn/. Absent => feature MLP.
+    if (!CNN_ENABLED) return;
     try {
       const base = new URL('./model-cnn/', import.meta.url);
       const meta = await fetch(new URL('meta.json', base)).then((r) => (r.ok ? r.json() : null));
