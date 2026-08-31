@@ -29,12 +29,16 @@ const APP_SHELL = [
   '/js/model-weights.js',
   '/js/smoothing.js',
   '/js/storage.js',
+  '/js/session-recovery.js',
+  '/js/native-bridge.js',
+  '/js/auth.js',
+  '/js/sync.js',
+  '/js/firebase.js',
+  '/js/firebase-config.js',
   '/js/timeline.js',
   '/js/charts.js',
   '/js/wake-lock.js',
   '/js/utils.js',
-  '/js/features.js',
-  '/js/model-weights.js',
 ];
 
 const TFJS_HOST = 'cdn.jsdelivr.net';

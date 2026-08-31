@@ -33,3 +33,10 @@ package-lock.json
 *.xcworkspace/xcuserdata/
 DerivedData/
 tests/fixtures/*.png
+
+# Firebase
+.firebaserc
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+.firebase/

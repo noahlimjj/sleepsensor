@@ -154,3 +154,24 @@ recording continues with the screen locked — no UI change needed, but:
 
 `recovered` (bool), `lastCheckpoint` (ms), `noiseDuration`, `noiseEpisodes` are
 now on session rows. `summary` also has `stopReason`.
+
+## 14. Accounts & cloud sync (Firebase — optional)
+
+Off by default. When `js/firebase-config.js` holds real values (see
+`docs/FIREBASE.md`), the app gains guest / email / Google / Apple sign-in and
+syncs **stats only** (sessions, events, highlights — never audio clips) to
+Firestore per account.
+
+- `js/auth.js` `authManager` — `signInGuest()`, `signIn*()`, `onChange(cb)`,
+  `uid`, `isGuest`, `signedIn`, `displayName`
+- `js/sync.js` `SyncManager` — `attach(fb, uid)`, `sync()`, `pushSession(id)`,
+  `purgeRemote()`, `onStatus(cb)`
+- `js/app.js` wires it: auth screen (`#auth-screen`) gates the app when
+  configured + no user; Settings gets an Account section (`#account-section`);
+  each finished recording calls `sync.pushSession`; app-foreground triggers
+  `sync.sync()`; "Clear All Data" also purges the account.
+- Storage rows now carry `updatedAt` (ms) for last-write-wins merge.
+- Firestore rules: `firestore.rules` (deploy with `firebase deploy --only
+  firestore:rules`).
+
+Local-only builds are completely unaffected — every auth/sync call is a no-op.

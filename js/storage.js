@@ -115,6 +115,7 @@ export class Storage {
       bruxismPercentage: session.bruxismPercentage || 0,
       lastCheckpoint: session.startTime || now, // updated ~every 60s while recording
       recovered: false, // set true if finalised by crash recovery
+      updatedAt: session.updatedAt || now, // for cloud sync (last-write-wins)
     };
     const tx = this._tx('sessions', 'readwrite');
     tx.objectStore('sessions').add(rec);
@@ -130,7 +131,7 @@ export class Storage {
       await this._done(tx).catch(() => {});
       throw new Error(`session ${id} not found`);
     }
-    const merged = { ...existing, ...updates, id };
+    const merged = { ...existing, ...updates, id, updatedAt: updates.updatedAt || Date.now() };
     store.put(merged);
     await this._done(tx);
     return merged;
@@ -193,6 +194,7 @@ export class Storage {
       severity: event.severity || 'mild',
       timestamp: event.timestamp || event.startTime,
       hasClip: !!event.hasClip,
+      updatedAt: event.updatedAt || Date.now(),
     };
     const tx = this._tx('events', 'readwrite');
     tx.objectStore('events').put(rec);
@@ -208,7 +210,7 @@ export class Storage {
       await this._done(tx).catch(() => {});
       throw new Error(`event ${id} not found`);
     }
-    const merged = { ...existing, ...updates, id };
+    const merged = { ...existing, ...updates, id, updatedAt: updates.updatedAt || Date.now() };
     store.put(merged);
     await this._done(tx);
     return merged;
@@ -278,6 +280,7 @@ export class Storage {
       classifiedAs: h.classifiedAs || 'unknown', // 'snoring'|'bruxism'|'noise'|'unknown'
       confidence: h.confidence ?? 0,
       hasClip: !!h.hasClip,
+      updatedAt: h.updatedAt || Date.now(),
     };
     const tx = this._tx('highlights', 'readwrite');
     tx.objectStore('highlights').put(rec);
@@ -293,7 +296,7 @@ export class Storage {
       await this._done(tx).catch(() => {});
       return null;
     }
-    const merged = { ...existing, ...updates, id };
+    const merged = { ...existing, ...updates, id, updatedAt: updates.updatedAt || Date.now() };
     store.put(merged);
     await this._done(tx);
     return merged;
@@ -381,6 +384,37 @@ export class Storage {
     const stores = ['sessions', 'events', 'clips', 'highlights', 'settings'];
     const tx = this._tx(stores, 'readwrite');
     stores.forEach((s) => tx.objectStore(s).clear());
+    await this._done(tx);
+  }
+
+  // ---- cloud-sync helpers (used by js/sync.js) --------------------
+  async _allEvents() {
+    const tx = this._tx('events', 'readonly');
+    return this._req(tx.objectStore('events').getAll());
+  }
+  async _allHighlights() {
+    const tx = this._tx('highlights', 'readonly');
+    return this._req(tx.objectStore('highlights').getAll());
+  }
+  /** Upsert a raw row from the cloud without touching updatedAt (it carries its own). */
+  async _putRaw(store, row) {
+    if (!row || !row.id) return;
+    const tx = this._tx(store, 'readwrite');
+    tx.objectStore(store).put(row);
+    await this._done(tx);
+  }
+  putSessionRaw(row) {
+    return this._putRaw('sessions', row);
+  }
+  putEventRaw(row) {
+    return this._putRaw('events', row);
+  }
+  putHighlightRaw(row) {
+    return this._putRaw('highlights', row);
+  }
+  async deleteRowById(store, id) {
+    const tx = this._tx(store, 'readwrite');
+    tx.objectStore(store).delete(id);
     await this._done(tx);
   }
 }

@@ -8,6 +8,7 @@ import { run as cnn } from './test-cnn.mjs';
 import { run as classifier } from './test-classifier.mjs';
 import { run as storage } from './test-storage.mjs';
 import { run as recovery } from './test-session-recovery.mjs';
+import { run as sync } from './test-sync.mjs';
 import { run as nativeBridge } from './test-native-bridge.mjs';
 import { run as wav } from './test-wav.mjs';
 import { run as engine } from './test-engine.mjs';
@@ -24,6 +25,7 @@ try {
   await classifier();
   await storage();
   await recovery();
+  await sync();
   await nativeBridge();
   await wav();
   await engine();

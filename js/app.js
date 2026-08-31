@@ -7,6 +7,9 @@ import { formatDuration, formatTimer, formatTime, formatDate, formatBytes, toDat
 import { Timeline } from './timeline.js';
 import { DonutChart, TrendChart } from './charts.js';
 import { SessionRecovery } from './session-recovery.js';
+import { authManager } from './auth.js';
+import { SyncManager } from './sync.js';
+import { getFirebase } from './firebase.js';
 
 class App {
   constructor() {
@@ -29,6 +32,10 @@ class App {
     this.timeline = null;
     this.donutChart = null;
     this.trendChart = null;
+
+    // Accounts / cloud sync (no-op unless firebase-config.js is filled in)
+    this.auth = authManager;
+    this.sync = null;
 
     // Audio playback
     this.currentAudio = null;
@@ -55,6 +62,10 @@ class App {
       // Initialize storage
       this.storage = new Storage();
       await this.storage.init();
+
+      // Accounts: if Firebase is configured, make sure we have a user (guest or
+      // real) before showing the app. No-op in local-only builds.
+      await this._setupAccounts();
 
       // Initialize classifier
       this.classifier = new Classifier();
@@ -103,6 +114,17 @@ class App {
         this.engine.setSensitivity(saved);
       } catch (_) { /* defaults are fine */ }
       this._syncSensitivityLabel();
+      this._updateAccountUI();
+
+      // pull fresh cloud data whenever the app comes back to the foreground
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible' && this.sync && !this.isRecording) {
+          this.sync.sync().then(() => {
+            this._loadHistory();
+            if (this.currentSessionId) this._loadReport(this.currentSessionId);
+          }).catch(() => {});
+        }
+      });
 
     } catch (err) {
       console.error('App init failed:', err);
@@ -110,6 +132,194 @@ class App {
       if (sub) sub.textContent = 'Failed to initialize. Please refresh.';
       const app = document.getElementById('app');
       if (app && app.hasAttribute('hidden')) app.removeAttribute('hidden');
+    }
+  }
+
+  // ========== ACCOUNTS / SYNC ==========
+
+  async _setupAccounts() {
+    try {
+      await this.auth.init();
+    } catch (e) {
+      console.warn('[app] auth init failed:', e);
+      return;
+    }
+    if (!this.auth.available) return; // local-only build — implicit guest
+
+    this._bindAuthScreen();
+
+    // wait for a user (guest or real); show the auth screen if none
+    if (!this.auth.user) {
+      const screen = document.getElementById('auth-screen');
+      if (screen) screen.removeAttribute('hidden');
+      // also lift the splash so the auth screen is visible
+      document.getElementById('splash-screen')?.classList.add('hidden');
+      await new Promise((resolve) => {
+        const off = this.auth.onChange(({ user }) => {
+          if (user) {
+            off();
+            resolve();
+          }
+        });
+      });
+      if (screen) screen.setAttribute('hidden', '');
+    }
+
+    await this._startSync();
+
+    // keep sync + settings UI in step with account changes
+    this.auth.onChange(async ({ user }) => {
+      this._updateAccountUI();
+      if (user && (!this.sync || this.sync.uid !== user.uid)) {
+        await this._startSync();
+        this._loadHistory();
+        this._loadLatestReport();
+      } else if (!user) {
+        this.sync?.detach();
+        this.sync = null;
+        this._updateAccountUI();
+      }
+    });
+  }
+
+  async _startSync() {
+    if (!this.auth.uid) return;
+    try {
+      const fb = await getFirebase();
+      if (!fb) return;
+      this.sync = new SyncManager(this.storage);
+      this._bindSyncStatus();
+      await this.sync.attach(fb, this.auth.uid);
+    } catch (e) {
+      console.warn('[app] sync attach failed:', e);
+    }
+  }
+
+  _bindSyncStatus() {
+    if (this._syncStatusBound) return;
+    this._syncStatusBound = true;
+    this.sync.onStatus((s) => {
+      const el = document.getElementById('sync-status');
+      if (!el) return;
+      el.textContent = {
+        syncing: 'Syncing…',
+        synced: 'Synced to your account',
+        offline: 'Offline — will sync later',
+        error: 'Sync error — will retry',
+        idle: '',
+      }[s] || '';
+    });
+  }
+
+  _bindAuthScreen() {
+    if (this._authBound) return;
+    this._authBound = true;
+    const m = this.auth.methods;
+    const showIf = (id, on) => document.getElementById(id)?.toggleAttribute('hidden', !on);
+    showIf('auth-guest', m.guest);
+    showIf('auth-google', m.google);
+    showIf('auth-apple', m.apple);
+    showIf('auth-email-toggle', m.email);
+
+    const err = (msg) => {
+      const e = document.getElementById('auth-error');
+      if (e) {
+        e.textContent = msg;
+        e.hidden = !msg;
+      }
+    };
+    const run = async (fn) => {
+      err('');
+      try {
+        await fn();
+      } catch (e) {
+        err(this._authErrorText(e));
+      }
+    };
+
+    document.getElementById('auth-guest')?.addEventListener('click', () => run(() => this.auth.signInGuest()));
+    document.getElementById('auth-google')?.addEventListener('click', () => run(() => this.auth.signInGoogle()));
+    document.getElementById('auth-apple')?.addEventListener('click', () => run(() => this.auth.signInApple()));
+
+    const form = document.getElementById('auth-email-form');
+    document.getElementById('auth-email-toggle')?.addEventListener('click', () => {
+      form?.toggleAttribute('hidden');
+    });
+    form?.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const email = document.getElementById('auth-email').value.trim();
+      const pw = document.getElementById('auth-password').value;
+      const mode = form.dataset.mode || 'signin';
+      run(() => (mode === 'signup' ? this.auth.signUpEmail(email, pw) : this.auth.signInEmail(email, pw)));
+    });
+    document.getElementById('auth-switch-mode')?.addEventListener('click', () => {
+      const signup = (form.dataset.mode || 'signin') === 'signin';
+      form.dataset.mode = signup ? 'signup' : 'signin';
+      document.getElementById('auth-submit').textContent = signup ? 'Create account' : 'Sign in';
+      document.getElementById('auth-switch-mode').textContent = signup
+        ? 'Have an account? Sign in'
+        : 'New here? Create an account';
+    });
+    document.getElementById('auth-reset')?.addEventListener('click', () =>
+      run(async () => {
+        const email = document.getElementById('auth-email').value.trim();
+        if (!email) throw new Error('Enter your email first.');
+        await this.auth.sendPasswordReset(email);
+        err('Password reset email sent.');
+      })
+    );
+  }
+
+  _authErrorText(e) {
+    const code = e && e.code;
+    const map = {
+      'auth/invalid-email': 'That email address looks invalid.',
+      'auth/missing-password': 'Enter a password.',
+      'auth/weak-password': 'Password should be at least 6 characters.',
+      'auth/email-already-in-use': 'That email already has an account — try signing in.',
+      'auth/invalid-credential': 'Wrong email or password.',
+      'auth/wrong-password': 'Wrong email or password.',
+      'auth/user-not-found': 'No account for that email.',
+      'auth/too-many-requests': 'Too many attempts — wait a minute and try again.',
+      'auth/popup-closed-by-user': 'Sign-in was cancelled.',
+      'auth/network-request-failed': 'Network error — check your connection.',
+    };
+    return map[code] || (e && e.message) || 'Something went wrong.';
+  }
+
+  _updateAccountUI() {
+    // privacy copy depends on whether cloud sync is active
+    const priv = document.getElementById('about-privacy');
+    if (priv) {
+      priv.textContent = this.auth.available
+        ? 'Audio is recorded and analysed on your device — clips never leave your phone. Your sleep stats sync to your account.'
+        : 'Audio is recorded and analysed entirely on your device. Nothing is ever uploaded.';
+    }
+    const nameEl = document.getElementById('account-name');
+    const statusEl = document.getElementById('account-status');
+    const signInBtn = document.getElementById('account-signin-btn');
+    const signOutBtn = document.getElementById('account-signout-btn');
+    const section = document.getElementById('account-section');
+    if (!section) return;
+
+    section.hidden = !this.auth.available;
+    if (!this.auth.available) return;
+
+    if (this.auth.signedIn) {
+      if (nameEl) nameEl.textContent = this.auth.displayName;
+      if (statusEl) statusEl.textContent = this.auth.email || 'Signed in';
+      signInBtn && (signInBtn.hidden = true);
+      signOutBtn && (signOutBtn.hidden = false);
+    } else if (this.auth.isGuest) {
+      if (nameEl) nameEl.textContent = 'Guest';
+      if (statusEl) statusEl.textContent = 'Sign in to keep your data and sync across devices';
+      signInBtn && (signInBtn.hidden = false);
+      signOutBtn && (signOutBtn.hidden = true);
+    } else {
+      if (nameEl) nameEl.textContent = 'Not signed in';
+      if (statusEl) statusEl.textContent = '';
+      signInBtn && (signInBtn.hidden = false);
+      signOutBtn && (signOutBtn.hidden = true);
     }
   }
 
@@ -140,7 +350,10 @@ class App {
 
     // Trigger lazy loads + re-render canvases now that the screen has a size
     if (name === 'history') this._loadHistory();
-    if (name === 'settings') this._updateStorageUsage();
+    if (name === 'settings') {
+      this._updateStorageUsage();
+      this._updateAccountUI();
+    }
     if (name === 'report' && this.currentSessionId) {
       requestAnimationFrame(() => this._loadReport(this.currentSessionId));
     }
@@ -268,6 +481,11 @@ class App {
       if (this.currentSessionId) {
         this._showScreen('report');
         await this._loadReport(this.currentSessionId);
+      }
+
+      // push this night's stats to the user's account (audio clips stay local)
+      if (this.sync && summary && summary.sessionId) {
+        this.sync.pushSession(summary.sessionId).catch(() => {});
       }
     } catch (err) {
       console.error('Failed to stop recording:', err);
@@ -836,10 +1054,20 @@ class App {
 
     // Clear data
     document.getElementById('setting-clear-btn').addEventListener('click', () => {
+      const synced = this.sync && this.auth.uid;
       this._showConfirm(
         'Clear All Data',
-        'This will permanently delete all sleep sessions, events, and audio clips. This cannot be undone.',
+        synced
+          ? 'This permanently deletes every sleep session, event and audio clip — on this device AND from your account. This cannot be undone.'
+          : 'This permanently deletes all sleep sessions, events, and audio clips. This cannot be undone.',
         async () => {
+          if (synced) {
+            try {
+              await this.sync.purgeRemote();
+            } catch (e) {
+              console.warn('purgeRemote failed:', e);
+            }
+          }
           await this.storage.clearAll();
           this.currentSessionId = null;
           this._stopCurrentClip();
@@ -850,6 +1078,26 @@ class App {
           this._banner('All data cleared.', { autoHideMs: 4000 });
         }
       );
+    });
+
+    // Account: sign in (guests) / sign out
+    document.getElementById('account-signin-btn')?.addEventListener('click', () => {
+      const screen = document.getElementById('auth-screen');
+      if (screen) screen.removeAttribute('hidden');
+    });
+    document.getElementById('account-signout-btn')?.addEventListener('click', () => {
+      this._showConfirm(
+        'Sign Out',
+        'Your synced data stays in your account. Sessions and clips on this device are kept until you clear them.',
+        async () => {
+          await this.auth.signOut();
+          await this.auth.signInGuest().catch(() => {});
+        }
+      );
+    });
+    document.getElementById('auth-close')?.addEventListener('click', () => {
+      // only allowed to dismiss once we already have a user
+      if (this.auth.user) document.getElementById('auth-screen')?.setAttribute('hidden', '');
     });
   }
 

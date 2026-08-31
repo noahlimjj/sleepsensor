@@ -1,0 +1,30 @@
+rules_version = '2';
+
+// SleepSensor — a signed-in user can only ever touch their own document tree.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isOwner(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+    function okCollection(c) {
+      return c == 'sessions' || c == 'events' || c == 'highlights';
+    }
+    // shape / size guard so a compromised client can't write junk
+    function saneDoc() {
+      return request.resource.data.keys().size() < 60
+             && request.resource.data.size() < 60;
+    }
+
+    match /users/{uid}/{collection}/{docId} {
+      allow read:            if isOwner(uid) && okCollection(collection);
+      allow create, update:  if isOwner(uid) && okCollection(collection) && saneDoc();
+      allow delete:          if isOwner(uid) && okCollection(collection);
+    }
+
+    // deny everything else
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

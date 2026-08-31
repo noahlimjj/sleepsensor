@@ -47,6 +47,44 @@
     </div>
   </div>
 
+  <!-- ========== AUTH SCREEN (only when Firebase is configured) ========== -->
+  <div id="auth-screen" class="auth-screen" hidden>
+    <button id="auth-close" class="auth-close" aria-label="Close">&times;</button>
+    <div class="auth-content">
+      <div class="auth-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+        </svg>
+      </div>
+      <h1 class="auth-title">SleepSensor</h1>
+      <p class="auth-subtitle">Sync your sleep history across devices. Audio clips always stay on your device.</p>
+
+      <div class="auth-buttons">
+        <button id="auth-guest" class="auth-btn auth-btn--primary" hidden>Continue as guest</button>
+        <button id="auth-google" class="auth-btn" hidden>
+          <span class="auth-btn-mark">G</span> Continue with Google
+        </button>
+        <button id="auth-apple" class="auth-btn" hidden>
+          <span class="auth-btn-mark"></span> Continue with Apple
+        </button>
+        <button id="auth-email-toggle" class="auth-btn auth-btn--ghost" hidden>Use email &amp; password</button>
+      </div>
+
+      <form id="auth-email-form" class="auth-email-form" data-mode="signin" hidden>
+        <input type="email" id="auth-email" placeholder="you@example.com" autocomplete="email" required>
+        <input type="password" id="auth-password" placeholder="Password" autocomplete="current-password" required minlength="6">
+        <button type="submit" id="auth-submit" class="auth-btn auth-btn--primary">Sign in</button>
+        <div class="auth-email-links">
+          <button type="button" id="auth-switch-mode" class="auth-link">New here? Create an account</button>
+          <button type="button" id="auth-reset" class="auth-link">Forgot password?</button>
+        </div>
+      </form>
+
+      <p id="auth-error" class="auth-error" hidden></p>
+      <p class="auth-fineprint">Guest accounts can be upgraded later without losing data.</p>
+    </div>
+  </div>
+
   <!-- ========== MAIN APP ========== -->
   <div id="app" class="app" hidden>
     <!-- ---- NAVIGATION ---- -->
@@ -321,6 +359,23 @@
         </div>
       </div>
 
+      <div class="settings-group" id="account-section" hidden>
+        <h2 class="settings-group-title">Account</h2>
+        <div class="setting-card">
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-label" id="account-name">Guest</span>
+              <span class="setting-desc" id="account-status">Sign in to keep your data</span>
+              <span class="setting-desc" id="sync-status" style="color:var(--mid-light); font-size:0.72rem; margin-top:4px;"></span>
+            </div>
+          </div>
+          <div class="setting-row setting-row--action">
+            <button class="setting-btn" id="account-signin-btn" hidden>Sign in / Create account</button>
+            <button class="setting-btn setting-btn--danger" id="account-signout-btn" hidden>Sign out</button>
+          </div>
+        </div>
+      </div>
+
       <div class="settings-group">
         <h2 class="settings-group-title">Data</h2>
         <div class="setting-row">
@@ -348,7 +403,7 @@
         <div class="setting-row">
           <div class="setting-info">
             <span class="setting-label">SleepSensor v1.0</span>
-            <span class="setting-desc">All audio is processed on your device. No data is ever uploaded.</span>
+            <span class="setting-desc" id="about-privacy">Audio is recorded and analysed entirely on your device. Recordings never leave your phone.</span>
           </div>
         </div>
       </div>
