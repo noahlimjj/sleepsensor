@@ -25,6 +25,8 @@ const APP_SHELL = [
   '/js/audio-engine.js',
   '/js/audio-worklet-processor.js',
   '/js/classifier.js',
+  '/js/features.js',
+  '/js/model-weights.js',
   '/js/storage.js',
   '/js/timeline.js',
   '/js/charts.js',

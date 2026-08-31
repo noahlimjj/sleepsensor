@@ -80,7 +80,12 @@ noiseDuration, noiseEpisodes, loudestDb, highlights[]
 ```
 plus the existing snoring/bruxism ones.
 
-## 8. Known frontend bug seen in testing
+## 8. sw.js
+
+Added `/js/features.js` and `/js/model-weights.js` to `APP_SHELL` (needed by the
+classifier — keep them in the precache list when you edit sw.js).
+
+## 9. Known frontend bug seen in testing
 
 `roundRect()` in a canvas renderer was called with a negative radius
 (`Radius value -16 is negative`) on the report/history screen — throws and
