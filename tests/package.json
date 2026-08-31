@@ -1,0 +1,12 @@
+{
+  "name": "sleepsensor-tests",
+  "private": true,
+  "type": "module",
+  "description": "Dev-only test harness for SleepSensor backend modules. Not part of the deployed site.",
+  "scripts": {
+    "test": "node run-all.mjs"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "^6.0.0"
+  }
+}

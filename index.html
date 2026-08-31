@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="description" content="SleepSensor — AI-powered sleep monitor that detects snoring and teeth grinding, tracks your sleep quality, and replays audio highlights.">
+  <meta name="theme-color" content="#0a0e27">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="SleepSensor">
+
+  <title>SleepSensor — Sleep Snoring & Bruxism Monitor</title>
+
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" type="image/svg+xml" href="/assets/icons/favicon.svg">
+  <link rel="apple-touch-icon" href="/assets/icons/icon-192.png">
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
+
+  <!-- TensorFlow.js (for classifier) -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js" defer></script>
+
+  <!-- App styles -->
+  <link rel="stylesheet" href="/css/index.css">
+
+  <!-- App script -->
+  <script type="module" src="/js/app.js" defer></script>
+</head>
+<body>
+  <!-- ========== SPLASH / LOADING ========== -->
+  <div id="splash-screen" class="splash-screen">
+    <div class="splash-content">
+      <div class="splash-icon">
+        <svg viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="40" cy="40" r="36" stroke="url(#splash-grad)" stroke-width="3" opacity="0.3"/>
+          <path d="M40 16C30 16 22 24 22 34C22 44 28 50 28 56H52C52 50 58 44 58 34C58 24 50 16 40 16Z" fill="url(#splash-grad)" opacity="0.15"/>
+          <path d="M40 16C30 16 22 24 22 34C22 44 28 50 28 56H52C52 50 58 44 58 34C58 24 50 16 40 16Z" stroke="url(#splash-grad)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M32 56V60C32 64.4183 35.5817 68 40 68C44.4183 68 48 64.4183 48 60V56" stroke="url(#splash-grad)" stroke-width="2.5" stroke-linecap="round"/>
+          <circle cx="40" cy="36" r="4" fill="url(#splash-grad)" opacity="0.6"/>
+          <!-- Sound waves -->
+          <path d="M14 30C14 30 10 34 10 40C10 46 14 50 14 50" stroke="url(#splash-grad)" stroke-width="2" stroke-linecap="round" opacity="0.4"/>
+          <path d="M66 30C66 30 70 34 70 40C70 46 66 50 66 50" stroke="url(#splash-grad)" stroke-width="2" stroke-linecap="round" opacity="0.4"/>
+          <defs>
+            <linearGradient id="splash-grad" x1="10" y1="16" x2="70" y2="68">
+              <stop stop-color="#6C63FF"/>
+              <stop offset="1" stop-color="#4ECDC4"/>
+            </linearGradient>
+          </defs>
+        </svg>
+      </div>
+      <h1 class="splash-title">SleepSensor</h1>
+      <p class="splash-subtitle">Initializing audio engine...</p>
+      <div class="splash-loader">
+        <div class="splash-loader-bar"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MAIN APP ========== -->
+  <div id="app" class="app" hidden>
+    <!-- ---- NAVIGATION ---- -->
+    <nav id="bottom-nav" class="bottom-nav">
+      <button class="nav-btn active" data-screen="record" id="nav-record">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/>
+          <circle cx="12" cy="12" r="4" fill="currentColor"/>
+        </svg>
+        <span>Record</span>
+      </button>
+      <button class="nav-btn" data-screen="report" id="nav-report">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="16" y1="13" x2="8" y2="13"/>
+          <line x1="16" y1="17" x2="8" y2="17"/>
+          <polyline points="10 9 9 9 8 9"/>
+        </svg>
+        <span>Report</span>
+      </button>
+      <button class="nav-btn" data-screen="history" id="nav-history">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+        </svg>
+        <span>History</span>
+      </button>
+      <button class="nav-btn" data-screen="settings" id="nav-settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+        <span>Settings</span>
+      </button>
+    </nav>
+
+    <!-- ---- RECORDING SCREEN ---- -->
+    <main id="screen-record" class="screen screen--record active">
+      <header class="screen-header">
+        <h1 class="screen-title">SleepSensor</h1>
+        <div class="header-badge" id="privacy-badge">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1.5L2.5 4V7.5C2.5 11.3 4.9 14.3 8 15C11.1 14.3 13.5 11.3 13.5 7.5V4L8 1.5Z"/></svg>
+          <span>On-Device</span>
+        </div>
+      </header>
+
+      <!-- Live waveform -->
+      <div class="waveform-container" id="waveform-container">
+        <canvas id="waveform-canvas" class="waveform-canvas"></canvas>
+        <div class="waveform-overlay" id="waveform-overlay">
+          <span class="waveform-label">Microphone paused</span>
+        </div>
+      </div>
+
+      <!-- Stats row -->
+      <div class="live-stats" id="live-stats">
+        <div class="live-stat">
+          <span class="live-stat-value" id="stat-elapsed">00:00:00</span>
+          <span class="live-stat-label">Elapsed</span>
+        </div>
+        <div class="live-stat live-stat--snoring">
+          <span class="live-stat-value" id="stat-snoring-count">0</span>
+          <span class="live-stat-label">Snoring</span>
+        </div>
+        <div class="live-stat live-stat--bruxism">
+          <span class="live-stat-value" id="stat-bruxism-count">0</span>
+          <span class="live-stat-label">Grinding</span>
+        </div>
+      </div>
+
+      <!-- Record button -->
+      <div class="record-btn-wrapper">
+        <button id="record-btn" class="record-btn" aria-label="Start recording">
+          <div class="record-btn-ring"></div>
+          <div class="record-btn-inner">
+            <svg class="record-btn-icon record-btn-icon--mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+              <line x1="12" y1="19" x2="12" y2="23"/>
+              <line x1="8" y1="23" x2="16" y2="23"/>
+            </svg>
+            <svg class="record-btn-icon record-btn-icon--stop" viewBox="0 0 24 24" fill="currentColor" hidden>
+              <rect x="6" y="6" width="12" height="12" rx="2"/>
+            </svg>
+          </div>
+        </button>
+        <p class="record-btn-label" id="record-btn-label">Tap to start monitoring</p>
+      </div>
+
+      <!-- Event toast (shown briefly when event detected) -->
+      <div id="event-toast" class="event-toast" hidden>
+        <div class="event-toast-icon"></div>
+        <div class="event-toast-text">
+          <span class="event-toast-type" id="toast-type"></span>
+          <span class="event-toast-confidence" id="toast-confidence"></span>
+        </div>
+      </div>
+    </main>
+
+    <!-- ---- MORNING REPORT SCREEN ---- -->
+    <main id="screen-report" class="screen screen--report">
+      <!-- Empty state -->
+      <div id="report-empty" class="empty-state">
+        <svg class="empty-icon" viewBox="0 0 80 80" fill="none">
+          <circle cx="40" cy="40" r="36" stroke="currentColor" stroke-width="2" opacity="0.2"/>
+          <path d="M28 52C28 52 32 44 40 44C48 44 52 52 52 52" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" opacity="0.3"/>
+          <circle cx="30" cy="34" r="3" fill="currentColor" opacity="0.3"/>
+          <circle cx="50" cy="34" r="3" fill="currentColor" opacity="0.3"/>
+        </svg>
+        <h2>No sleep data yet</h2>
+        <p>Record a sleep session to see your morning report</p>
+      </div>
+
+      <!-- Report content -->
+      <div id="report-content" hidden>
+        <header class="screen-header">
+          <h1 class="screen-title">Morning Report</h1>
+          <span class="report-date" id="report-date"></span>
+        </header>
+
+        <!-- Summary cards -->
+        <div class="summary-cards" id="summary-cards">
+          <div class="summary-card summary-card--sleep">
+            <div class="summary-card-icon">🌙</div>
+            <div class="summary-card-value" id="report-sleep-time">--</div>
+            <div class="summary-card-label">Total Sleep</div>
+          </div>
+          <div class="summary-card summary-card--snoring">
+            <div class="summary-card-icon">😴</div>
+            <div class="summary-card-value" id="report-snoring-time">--</div>
+            <div class="summary-card-label">Snoring</div>
+            <div class="summary-card-sub" id="report-snoring-pct">--</div>
+          </div>
+          <div class="summary-card summary-card--bruxism">
+            <div class="summary-card-icon">😬</div>
+            <div class="summary-card-value" id="report-bruxism-time">--</div>
+            <div class="summary-card-label">Grinding</div>
+            <div class="summary-card-sub" id="report-bruxism-pct">--</div>
+          </div>
+        </div>
+
+        <!-- Sleep timeline -->
+        <section class="report-section">
+          <h2 class="section-title">Sleep Timeline</h2>
+          <div class="timeline-wrapper" id="timeline-wrapper">
+            <canvas id="timeline-canvas" class="timeline-canvas"></canvas>
+          </div>
+          <div class="timeline-legend">
+            <span class="legend-item"><span class="legend-dot legend-dot--quiet"></span>Quiet</span>
+            <span class="legend-item"><span class="legend-dot legend-dot--snoring"></span>Snoring</span>
+            <span class="legend-item"><span class="legend-dot legend-dot--bruxism"></span>Grinding</span>
+          </div>
+        </section>
+
+        <!-- Severity breakdown -->
+        <section class="report-section">
+          <h2 class="section-title">Severity Breakdown</h2>
+          <div class="severity-bars" id="severity-bars">
+            <!-- Filled by JS -->
+          </div>
+        </section>
+
+        <!-- Highlights / Clips -->
+        <section class="report-section">
+          <h2 class="section-title">Audio Highlights</h2>
+          <div class="clips-list" id="clips-list">
+            <!-- Filled by JS -->
+          </div>
+          <div id="clips-empty" class="empty-state empty-state--small">
+            <p>No audio clips captured this session</p>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <!-- ---- HISTORY SCREEN ---- -->
+    <main id="screen-history" class="screen screen--history">
+      <header class="screen-header">
+        <h1 class="screen-title">History</h1>
+      </header>
+
+      <!-- Trend chart -->
+      <section class="report-section">
+        <h2 class="section-title">Trends</h2>
+        <div class="chart-container">
+          <canvas id="trend-chart" class="chart-canvas"></canvas>
+        </div>
+      </section>
+
+      <!-- Donut chart -->
+      <section class="report-section">
+        <h2 class="section-title">Sleep Composition</h2>
+        <div class="chart-container chart-container--donut">
+          <canvas id="donut-chart" class="chart-canvas chart-canvas--donut"></canvas>
+          <div class="donut-center" id="donut-center">
+            <span class="donut-value">--</span>
+            <span class="donut-label">nights</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Session list -->
+      <section class="report-section">
+        <h2 class="section-title">Past Sessions</h2>
+        <div class="session-list" id="session-list">
+          <!-- Filled by JS -->
+        </div>
+        <div id="history-empty" class="empty-state empty-state--small">
+          <p>No sessions recorded yet</p>
+        </div>
+      </section>
+    </main>
+
+    <!-- ---- SETTINGS SCREEN ---- -->
+    <main id="screen-settings" class="screen screen--settings">
+      <header class="screen-header">
+        <h1 class="screen-title">Settings</h1>
+      </header>
+
+      <div class="settings-group">
+        <h2 class="settings-group-title">Recording</h2>
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Microphone Sensitivity</span>
+            <span class="setting-desc">Adjust noise gate threshold</span>
+          </div>
+          <input type="range" id="setting-sensitivity" class="setting-slider" min="0" max="100" value="50">
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <h2 class="settings-group-title">Data</h2>
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Storage Used</span>
+            <span class="setting-desc" id="setting-storage-used">Calculating...</span>
+          </div>
+        </div>
+        <div class="setting-row setting-row--action">
+          <button class="setting-btn" id="setting-export-btn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Export All Data
+          </button>
+        </div>
+        <div class="setting-row setting-row--action">
+          <button class="setting-btn setting-btn--danger" id="setting-clear-btn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            Clear All Data
+          </button>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <h2 class="settings-group-title">About</h2>
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">SleepSensor v1.0</span>
+            <span class="setting-desc">All audio is processed on your device. No data is ever uploaded.</span>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ---- CONFIRM DIALOG ---- -->
+  <dialog id="confirm-dialog" class="confirm-dialog">
+    <div class="confirm-dialog-content">
+      <h2 id="confirm-title">Are you sure?</h2>
+      <p id="confirm-message">This action cannot be undone.</p>
+      <div class="confirm-actions">
+        <button id="confirm-cancel" class="confirm-btn confirm-btn--cancel">Cancel</button>
+        <button id="confirm-ok" class="confirm-btn confirm-btn--ok">Confirm</button>
+      </div>
+    </div>
+  </dialog>
+</body>
+</html>

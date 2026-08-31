@@ -1,0 +1,25 @@
+{
+  "name": "SleepSensor",
+  "short_name": "SleepSensor",
+  "description": "AI-powered sleep monitor — detects snoring & teeth grinding, replays audio highlights",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#0a0e27",
+  "background_color": "#060918",
+  "categories": ["health", "medical", "lifestyle"],
+  "icons": [
+    {
+      "src": "/assets/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/assets/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
