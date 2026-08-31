@@ -19,6 +19,7 @@
   /* Semantic monochrome */
   --snoring:     #ffffff;
   --bruxism:     #888888;
+  --noise:       #555555;
   --quiet:       #222222;
 
   --font-main:   'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
@@ -229,6 +230,20 @@ a {
   height: 14px;
 }
 
+/* Status Banner */
+.status-banner {
+  background: var(--mid-dark);
+  color: var(--white);
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  margin-bottom: 16px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  text-align: center;
+  border: var(--border);
+  animation: fadeIn 300ms ease;
+}
+
 /* ========== RECORDING SCREEN ========== */
 .waveform-container {
   position: relative;
@@ -244,6 +259,20 @@ a {
   width: 100%;
   height: 100%;
   display: block;
+}
+
+.live-db-meter {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--mid-light);
+  background: rgba(0, 0, 0, 0.4);
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
 }
 
 .waveform-overlay {
@@ -300,8 +329,9 @@ a {
   font-weight: 500;
 }
 
-.live-stat--snoring .live-stat-value { color: var(--white); }
-.live-stat--bruxism .live-stat-value { color: var(--white); }
+.live-stat--snoring .live-stat-value { color: var(--snoring); }
+.live-stat--bruxism .live-stat-value { color: var(--bruxism); }
+.live-stat--noise .live-stat-value { color: var(--noise); }
 .live-stat--elapsed .live-stat-value { color: var(--white); }
 
 /* Record button */
@@ -368,6 +398,15 @@ a {
   color: var(--mid-light);
   margin-top: 24px;
   font-weight: 500;
+}
+
+.background-guidance {
+  font-size: 0.75rem;
+  color: var(--mid);
+  margin-top: 12px;
+  max-width: 240px;
+  text-align: center;
+  line-height: 1.4;
 }
 
 /* Event toast */
@@ -513,9 +552,10 @@ a {
   border-radius: var(--radius-full);
 }
 
-.legend-dot--quiet   { background: var(--mid-dark); }
-.legend-dot--snoring { background: var(--white); }
-.legend-dot--bruxism { background: var(--mid-light); }
+.legend-dot--quiet   { background: var(--quiet); }
+.legend-dot--snoring { background: var(--snoring); }
+.legend-dot--bruxism { background: var(--bruxism); }
+.legend-dot--noise   { background: var(--noise); }
 
 /* Severity bars */
 .severity-bars {
@@ -627,6 +667,60 @@ a {
   font-size: 0.85rem;
   color: var(--mid);
   font-variant-numeric: tabular-nums;
+}
+
+/* Carousel */
+.carousel-container {
+  margin: 0 -16px;
+  padding: 0 16px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.carousel-container::-webkit-scrollbar {
+  display: none;
+}
+
+.highlights-carousel {
+  display: flex;
+  gap: 12px;
+  padding-bottom: 8px;
+}
+
+.highlight-card {
+  flex: 0 0 160px;
+  background: var(--dark);
+  border: var(--border);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.highlight-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.highlight-type {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--white);
+}
+
+.highlight-db {
+  font-size: 0.75rem;
+  color: var(--mid-light);
+  background: var(--mid-dark);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  font-weight: 500;
+}
+
+.highlight-meta {
+  font-size: 0.75rem;
+  color: var(--mid);
 }
 
 /* ========== HISTORY ========== */
@@ -758,8 +852,9 @@ a {
   border-radius: var(--radius-full);
 }
 
-.session-stat--snoring .session-stat-dot { background: var(--white); }
-.session-stat--bruxism .session-stat-dot { background: var(--mid-light); }
+.session-stat--snoring .session-stat-dot { background: var(--snoring); }
+.session-stat--bruxism .session-stat-dot { background: var(--bruxism); }
+.session-stat--noise .session-stat-dot { background: var(--noise); }
 
 .session-arrow {
   width: 20px;
@@ -823,7 +918,15 @@ a {
   border-radius: var(--radius-full);
 }
 
-.setting-slider::-webkit-slider-thumb {
+.setting-slider--full {
+  width: 100%;
+  height: 4px;
+  background: var(--mid-dark);
+  border-radius: var(--radius-full);
+}
+
+.setting-slider::-webkit-slider-thumb,
+.setting-slider--full::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 20px;
   height: 20px;

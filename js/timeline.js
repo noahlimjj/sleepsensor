@@ -51,12 +51,13 @@ export class Timeline {
     const colors = {
       snoring: '#ffffff',
       bruxism: '#888888',
+      noise: '#555555',
     };
 
     for (const event of events) {
       const x = Math.max(0, Math.min(w, ((event.startTime - session.startTime) / totalMs) * w));
       let eventW = Math.max(4, ((event.endTime - event.startTime) / totalMs) * w);
-      if (x + eventW > w) eventW = w - x;
+      if (x + eventW > w) eventW = Math.max(0, w - x);
 
       ctx.fillStyle = colors[event.type] || '#cccccc';
       ctx.beginPath();

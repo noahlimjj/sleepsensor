@@ -109,8 +109,12 @@ export class Storage {
       bruxismDuration: session.bruxismDuration || 0,
       snoringEpisodes: session.snoringEpisodes || 0,
       bruxismEpisodes: session.bruxismEpisodes || 0,
+      noiseDuration: session.noiseDuration || 0,
+      noiseEpisodes: session.noiseEpisodes || 0,
       snoringPercentage: session.snoringPercentage || 0,
       bruxismPercentage: session.bruxismPercentage || 0,
+      lastCheckpoint: session.startTime || now, // updated ~every 60s while recording
+      recovered: false, // set true if finalised by crash recovery
     };
     const tx = this._tx('sessions', 'readwrite');
     tx.objectStore('sessions').add(rec);
@@ -154,6 +158,12 @@ export class Storage {
   async getRecentSessions(limit = 30) {
     const rows = await this.getAllSessions();
     return rows.slice(0, limit);
+  }
+
+  /** Sessions that were never finalised (endTime === null) — for crash recovery. */
+  async getUnfinishedSessions() {
+    const rows = await this.getAllSessions();
+    return rows.filter((s) => s.endTime == null);
   }
 
   async deleteSession(id) {

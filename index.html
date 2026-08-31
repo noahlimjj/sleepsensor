@@ -92,9 +92,17 @@
         </div>
       </header>
 
+      <!-- Status Banner -->
+      <div id="status-banner" class="status-banner" hidden>
+        <span id="status-banner-text"></span>
+      </div>
+
       <!-- Live waveform -->
       <div class="waveform-container" id="waveform-container">
         <canvas id="waveform-canvas" class="waveform-canvas"></canvas>
+        <div class="live-db-meter" id="live-db-meter" hidden>
+          <span id="db-value">--</span>
+        </div>
         <div class="waveform-overlay" id="waveform-overlay">
           <span class="waveform-label">Microphone paused</span>
         </div>
@@ -113,6 +121,10 @@
         <div class="live-stat live-stat--bruxism">
           <span class="live-stat-value" id="stat-bruxism-count">0</span>
           <span class="live-stat-label">Grinding</span>
+        </div>
+        <div class="live-stat live-stat--noise">
+          <span class="live-stat-value" id="stat-noise-count">0</span>
+          <span class="live-stat-label">Noise</span>
         </div>
       </div>
 
@@ -133,6 +145,7 @@
           </div>
         </button>
         <p class="record-btn-label" id="record-btn-label">Tap to start monitoring</p>
+        <p class="background-guidance" id="background-guidance" hidden></p>
       </div>
 
       <!-- Event toast (shown briefly when event detected) -->
@@ -208,6 +221,19 @@
           </div>
         </section>
 
+        <!-- Loudest Highlights -->
+        <section class="report-section">
+          <h2 class="section-title">Loudest Moments</h2>
+          <div class="carousel-container">
+            <div class="highlights-carousel" id="highlights-carousel">
+              <!-- Filled by JS -->
+            </div>
+            <div id="highlights-empty" class="empty-state empty-state--small">
+              <p>No highlights captured this session</p>
+            </div>
+          </div>
+        </section>
+
         <!-- Highlights / Clips -->
         <section class="report-section">
           <h2 class="section-title">Audio Highlights</h2>
@@ -267,12 +293,21 @@
 
       <div class="settings-group">
         <h2 class="settings-group-title">Recording</h2>
-        <div class="setting-row">
-          <div class="setting-info">
-            <span class="setting-label">Microphone Sensitivity</span>
-            <span class="setting-desc">Adjust noise gate threshold</span>
+        <div class="setting-card">
+          <div class="setting-row">
+            <div class="setting-info" style="width: 100%;">
+              <div style="display:flex; justify-content:space-between; margin-bottom:12px;">
+                <span class="setting-label">Microphone Sensitivity</span>
+              </div>
+              <input type="range" id="setting-sensitivity" class="setting-slider--full" min="0" max="100" value="50">
+              <div style="display:flex; justify-content:space-between; margin-top:8px;">
+                <span class="setting-desc" style="font-size:0.75rem;">Less sensitive</span>
+                <span class="setting-desc" style="font-size:0.75rem;">More sensitive</span>
+              </div>
+              <div class="setting-desc" id="setting-sensitivity-desc" style="margin-top:12px; font-weight:500; color:var(--white);">Medium</div>
+              <div class="setting-desc" id="setting-sensitivity-detail" style="margin-top:2px;">Captures normal snoring.</div>
+            </div>
           </div>
-          <input type="range" id="setting-sensitivity" class="setting-slider" min="0" max="100" value="50">
         </div>
       </div>
 

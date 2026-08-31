@@ -20,8 +20,14 @@
 import { WakeLock } from './wake-lock.js';
 import { Classifier } from './classifier.js';
 import { HmmSmoother } from './smoothing.js';
+import { nativeBridge } from './native-bridge.js';
 
 const SMOOTH_CLASSES = ['quiet', 'snoring', 'bruxism', 'noise'];
+
+// safety: never record forever if the user forgets to stop
+const MAX_SESSION_MS = 14 * 60 * 60 * 1000;
+// how often to persist the open session so a crash loses minutes, not the night
+const CHECKPOINT_MS = 60 * 1000;
 
 const TARGET_SAMPLE_RATE = 16000;
 const POSITIVE_TYPES = new Set(['snoring', 'bruxism', 'noise']);
@@ -94,7 +100,10 @@ export class AudioEngine {
     // background resilience
     this._lastAudioAt = 0;
     this._watchdog = null;
+    this._checkpointTimer = null;
     this._suspendedSince = 0;
+    this._interrupted = false;
+    this.native = nativeBridge;
     this._onVisibility = this._handleVisibility.bind(this);
     this._onCtxStateChange = this._handleCtxStateChange.bind(this);
     this._onWorkletMessage = this._onWorkletMessage.bind(this);
@@ -259,14 +268,39 @@ export class AudioEngine {
       this._highlights = [];
       this._tally = freshTally();
       this._suspendedSince = 0;
+      this._interrupted = false;
       this._smoother.reset();
 
       await this.wakeLock.acquire();
       document.addEventListener('visibilitychange', this._onVisibility);
       this._startWatchdog();
+      this._startCheckpoints();
+
+      // native background-recording mode (Capacitor iOS/Android) — keeps the
+      // audio graph alive while the screen is locked. No-op on the plain web.
+      let nativeWarnings = [];
+      try {
+        const prep = await this.native.prepare();
+        nativeWarnings = prep.warnings || [];
+        await this.native.beginSession({ title: 'SleepSensor', text: 'Monitoring your sleep…' });
+        this.native.on({
+          onInterruptionBegan: () => this._onInterruption(true),
+          onInterruptionEnded: () => this._onInterruption(false),
+          onResume: () => this._handleVisibility(),
+          onAppState: (s) => {
+            if (s && s.isActive) this._handleVisibility();
+          },
+          onLowMemory: () => this._setStatus('recording', 'Device low on memory — recording continues.'),
+        });
+      } catch (e) {
+        console.warn('[AudioEngine] native bridge:', e?.message || e);
+      }
 
       this._recording = true;
-      this._setStatus('recording');
+      this._setStatus('recording', null, {
+        native: this.native.supported,
+        warnings: nativeWarnings,
+      });
       return this.session;
     } catch (err) {
       await this._teardown();
@@ -276,17 +310,24 @@ export class AudioEngine {
     }
   }
 
-  async stop() {
+  async stop(reason) {
     if (!this._recording) return null;
     this._recording = false;
 
     this._stopWatchdog();
+    this._stopCheckpoints();
     document.removeEventListener('visibilitychange', this._onVisibility);
 
     await this._finalizePending();
     if (this._clipQueue.length) await delay(500); // let outstanding clips arrive
 
     await this.wakeLock.release();
+    try {
+      await this.native.endSession();
+      await this.native.dispose();
+    } catch (_) {
+      /* non-fatal */
+    }
     await this._teardown();
 
     const endTime = Date.now();
@@ -319,16 +360,82 @@ export class AudioEngine {
       highlights = await this.storage.getHighlightsBySession(this.session.id).catch(() => []);
     }
 
-    this._setStatus('idle');
+    this._setStatus('idle', reason ? `Stopped: ${reason}` : null, { reason: reason || 'user' });
     const summary = {
       sessionId: this.session ? this.session.id : null,
       startTime,
+      stopReason: reason || 'user',
       ...summaryPatch,
       clips,
       highlights,
     };
     this.session = null;
     return summary;
+  }
+
+  // ---- checkpointing (crash recovery) ----------------------------
+  _startCheckpoints() {
+    this._stopCheckpoints();
+    this._checkpointTimer = setInterval(() => this._checkpoint(), CHECKPOINT_MS);
+  }
+  _stopCheckpoints() {
+    if (this._checkpointTimer) clearInterval(this._checkpointTimer);
+    this._checkpointTimer = null;
+  }
+  _checkpoint() {
+    if (!this._recording) return;
+
+    // safety auto-stop: never record past MAX_SESSION_MS
+    if (Date.now() - this.startWallTime > MAX_SESSION_MS) {
+      this.stop('max-duration').catch(() => {});
+      return;
+    }
+
+    const t = this._tally;
+    if (this.storage && this.session) {
+      this.storage
+        .updateSession(this.session.id, {
+          lastCheckpoint: Date.now(),
+          snoringDuration: round1(t.snoringDuration),
+          bruxismDuration: round1(t.bruxismDuration),
+          noiseDuration: round1(t.noiseDuration),
+          snoringEpisodes: t.snoringEpisodes,
+          bruxismEpisodes: t.bruxismEpisodes,
+          noiseEpisodes: t.noiseEpisodes,
+          loudestDb: t.loudestDb === -Infinity ? null : round1(t.loudestDb),
+        })
+        .catch((e) => {
+          // storage full or unavailable mid-night — stop cleanly, keep what we have
+          if (/quota|full|NotAllowed|Unknown/i.test(String(e && e.name))) {
+            console.warn('[AudioEngine] storage error during checkpoint — stopping:', e);
+            this.stop('storage-full').catch(() => {});
+          }
+        });
+    }
+
+    const mins = Math.round((Date.now() - this.startWallTime) / 60000);
+    this.native
+      .updateNotification(
+        `${fmtDur(mins)} · ${t.snoringEpisodes} snoring · ${t.bruxismEpisodes} grinding · ${t.noiseEpisodes} other`
+      )
+      .catch(() => {});
+  }
+
+  _onInterruption(began) {
+    if (!this._recording) return;
+    if (began) {
+      this._interrupted = true;
+      this._setStatus('interrupted', 'Audio interrupted (call, alarm or another app) — will resume automatically.');
+    } else {
+      this._interrupted = false;
+      if (this.audioContext && this.audioContext.state !== 'running') {
+        this.audioContext.resume().catch(() => {});
+      }
+      this.native.beginSession({ title: 'SleepSensor', text: 'Monitoring your sleep…' }).catch(() => {});
+      this.wakeLock.acquire().catch(() => {});
+      this._lastAudioAt = Date.now();
+      this._setStatus('recording', null, { resumedFromInterruption: true });
+    }
   }
 
   // ---- worklet message handling -------------------------------------
@@ -735,6 +842,7 @@ export class AudioEngine {
 
   async _teardown() {
     this._stopWatchdog();
+    this._stopCheckpoints();
     try {
       if (this.keepAlive) {
         try {
@@ -894,6 +1002,11 @@ function round3(x) {
 }
 function delay(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+function fmtDur(mins) {
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return h ? `${h}h ${m}m` : `${m}m`;
 }
 function cryptoId() {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();

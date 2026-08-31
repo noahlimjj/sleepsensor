@@ -14,7 +14,7 @@
  *               network-first (falling back to cache) for everything else
  */
 
-const CACHE_NAME = 'sleepsensor-v4';
+const CACHE_NAME = 'sleepsensor-v5';
 
 const APP_SHELL = [
   '/',
@@ -33,6 +33,8 @@ const APP_SHELL = [
   '/js/charts.js',
   '/js/wake-lock.js',
   '/js/utils.js',
+  '/js/features.js',
+  '/js/model-weights.js',
 ];
 
 const TFJS_HOST = 'cdn.jsdelivr.net';

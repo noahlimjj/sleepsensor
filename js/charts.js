@@ -28,7 +28,7 @@ export class DonutChart {
     const cy = s / 2;
     const outerR = s / 2 - 12;
     const innerR = outerR - 16;
-    const total = (data.quiet || 0) + (data.snoring || 0) + (data.bruxism || 0);
+    const total = (data.quiet || 0) + (data.snoring || 0) + (data.bruxism || 0) + (data.noise || 0);
 
     ctx.clearRect(0, 0, s, s);
     ctx.imageSmoothingEnabled = true;
@@ -46,6 +46,7 @@ export class DonutChart {
     const segments = [
       { value: data.quiet || 0, color: '#222222' },
       { value: data.bruxism || 0, color: '#888888' },
+      { value: data.noise || 0, color: '#555555' },
       { value: data.snoring || 0, color: '#ffffff' },
     ];
 
@@ -137,7 +138,7 @@ export class TrendChart {
     }
 
     const maxVal = Math.max(
-      ...sessions.map(s => Math.max(s.snoringDuration || 0, s.bruxismDuration || 0)),
+      ...sessions.map(s => Math.max(s.snoringDuration || 0, s.bruxismDuration || 0, s.noiseDuration || 0)),
       60
     );
     const yMax = Math.ceil(maxVal / 60) * 60;
@@ -164,6 +165,7 @@ export class TrendChart {
 
     const datasets = [
       { key: 'bruxismDuration', color: '#888888', label: 'Grinding' },
+      { key: 'noiseDuration', color: '#555555', label: 'Noise' },
       { key: 'snoringDuration', color: '#ffffff', label: 'Snoring' },
     ];
 

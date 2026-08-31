@@ -19,6 +19,7 @@ class App {
     this.isRecording = false;
     this.snoringCount = 0;
     this.bruxismCount = 0;
+    this.noiseCount = 0;
     this.elapsedInterval = null;
     this.startTime = null;
     this.currentSessionId = null;
@@ -79,6 +80,13 @@ class App {
       this._loadLatestReport();
       this._loadHistory();
       this._updateStorageUsage();
+      
+      if (this.engine) {
+        const slider = document.getElementById('setting-sensitivity');
+        const desc = this.engine.describeSensitivity(slider.value / 100);
+        document.getElementById('setting-sensitivity-desc').textContent = desc.level;
+        document.getElementById('setting-sensitivity-detail').textContent = desc.description;
+      }
 
     } catch (err) {
       console.error('App init failed:', err);
@@ -146,6 +154,7 @@ class App {
       this.isRecording = true;
       this.snoringCount = 0;
       this.bruxismCount = 0;
+      this.noiseCount = 0;
       this.startTime = Date.now();
 
       // Update UI
@@ -154,10 +163,17 @@ class App {
       document.querySelector('.record-btn-icon--mic').setAttribute('hidden', '');
       document.querySelector('.record-btn-icon--stop').removeAttribute('hidden');
       document.getElementById('waveform-overlay').classList.add('hidden');
+      document.getElementById('status-banner').setAttribute('hidden', '');
+      document.getElementById('live-db-meter').removeAttribute('hidden');
+
+      const guidance = document.getElementById('background-guidance');
+      guidance.textContent = this.engine.backgroundGuidance();
+      guidance.removeAttribute('hidden');
 
       // Reset stats
       document.getElementById('stat-snoring-count').textContent = '0';
       document.getElementById('stat-bruxism-count').textContent = '0';
+      document.getElementById('stat-noise-count').textContent = '0';
       document.getElementById('stat-elapsed').textContent = '00:00:00';
 
       // Start elapsed timer
@@ -188,6 +204,8 @@ class App {
       document.querySelector('.record-btn-icon--mic').removeAttribute('hidden');
       document.querySelector('.record-btn-icon--stop').setAttribute('hidden', '');
       document.getElementById('waveform-overlay').classList.remove('hidden');
+      document.getElementById('live-db-meter').setAttribute('hidden', '');
+      document.getElementById('background-guidance').setAttribute('hidden', '');
 
       // Stop elapsed timer
       clearInterval(this.elapsedInterval);
@@ -264,6 +282,14 @@ class App {
         ctx.fill();
       }
 
+      if (this.engine) {
+        const level = this.engine.getLevel();
+        if (level && level.dbFS > -Infinity) {
+          const dbStr = `${Math.round(level.dbFS)} dBFS · ~${Math.round(level.spl)} dB`;
+          document.getElementById('db-value').textContent = dbStr;
+        }
+      }
+
       this.waveformAnimId = requestAnimationFrame(draw);
     };
 
@@ -287,6 +313,9 @@ class App {
     } else if (event.type === 'bruxism') {
       this.bruxismCount++;
       document.getElementById('stat-bruxism-count').textContent = this.bruxismCount;
+    } else if (event.type === 'noise') {
+      this.noiseCount++;
+      document.getElementById('stat-noise-count').textContent = this.noiseCount;
     }
     this._showToast(event);
   }
@@ -298,9 +327,22 @@ class App {
     const iconEl = toast.querySelector('.event-toast-icon');
 
     // Set content
-    typeEl.textContent = event.type === 'snoring' ? 'Snoring detected' : 'Grinding detected';
-    confEl.textContent = `${Math.round(event.confidence * 100)}%`;
-    iconEl.textContent = event.type === 'snoring' ? '😴' : '😬';
+    if (event.type === 'snoring') {
+      typeEl.textContent = 'Snoring detected';
+      iconEl.textContent = '😴';
+    } else if (event.type === 'bruxism') {
+      typeEl.textContent = 'Grinding detected';
+      iconEl.textContent = '😬';
+    } else if (event.type === 'noise') {
+      typeEl.textContent = 'Noise detected';
+      iconEl.textContent = '🔊';
+    }
+
+    if (event.type === 'noise' && event.peakDb) {
+      confEl.textContent = `~${Math.round(event.peakDb)} dB`;
+    } else {
+      confEl.textContent = `${Math.round(event.confidence * 100)}%`;
+    }
 
     // Set style
     toast.className = `event-toast toast--${event.type}`;
@@ -321,12 +363,22 @@ class App {
 
   _onStatusChange(status, error) {
     const label = document.getElementById('record-btn-label');
+    const banner = document.getElementById('status-banner');
+    const bannerText = document.getElementById('status-banner-text');
+
     if (status === 'error') {
-      label.textContent = error || 'Microphone error';
+      label.textContent = 'Microphone error';
+      bannerText.textContent = error || 'Microphone error';
+      banner.removeAttribute('hidden');
       this.isRecording = false;
       document.getElementById('app').classList.remove('recording');
     } else if (status === 'requesting') {
       label.textContent = 'Requesting microphone access...';
+    } else if (status === 'interrupted' || status === 'stalled') {
+      bannerText.textContent = 'Audio processing interrupted by OS. Please keep the app open.';
+      banner.removeAttribute('hidden');
+    } else if (status === 'recording') {
+      banner.setAttribute('hidden', '');
     }
   }
 
@@ -377,6 +429,62 @@ class App {
     // Audio clips
     const clips = await this.storage.getClipsBySession(sessionId);
     this._renderClips(clips, events);
+
+    // Highlights
+    const highlights = await this.storage.getHighlightsBySession(sessionId);
+    const highlightClips = await this.storage.getClipsBySessionType(sessionId, 'highlight');
+    this._renderHighlights(highlights, highlightClips);
+  }
+
+  _renderHighlights(highlights, clips) {
+    const container = document.getElementById('highlights-carousel');
+    const emptyEl = document.getElementById('highlights-empty');
+
+    if (!highlights || highlights.length === 0) {
+      container.innerHTML = '';
+      emptyEl.removeAttribute('hidden');
+      return;
+    }
+
+    emptyEl.setAttribute('hidden', '');
+
+    // Map clips by event ID
+    const clipMap = new Map(clips.map(c => [c.eventId, c]));
+
+    container.innerHTML = highlights.map(h => {
+      const clip = clipMap.get(h.id);
+      const time = formatTime(h.timestamp);
+      let label = h.classifiedAs;
+      if (label === 'unknown') label = 'Unknown Noise';
+      else if (label === 'snoring') label = 'Snoring';
+      else if (label === 'bruxism') label = 'Grinding';
+      else if (label === 'noise') label = 'Noise';
+      
+      const db = h.peakDb ? `~${Math.round(h.peakDb)} dB` : '';
+
+      return `
+        <div class="highlight-card">
+          <div class="highlight-header">
+            <span class="highlight-type">${label}</span>
+            ${db ? `<span class="highlight-db">${db}</span>` : ''}
+          </div>
+          <span class="highlight-meta">${time}</span>
+          ${clip ? `
+          <button class="clip-play-btn" style="margin-top:auto; align-self:flex-start;" data-clip-id="${clip.id}" aria-label="Play highlight">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+              <polygon points="6,4 20,12 6,20"/>
+            </svg>
+          </button>` : ''}
+        </div>
+      `;
+    }).join('');
+
+    container.querySelectorAll('.clip-play-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._playClip(btn.dataset.clipId, btn);
+      });
+    });
   }
 
   _renderSeverityBars(events) {
@@ -416,10 +524,16 @@ class App {
     container.innerHTML = clips.map(clip => {
       const event = eventMap.get(clip.eventId) || {};
       const type = event.type || 'snoring';
-      const icon = type === 'snoring' ? '😴' : '😬';
+      const icon = type === 'snoring' ? '😴' : (type === 'bruxism' ? '😬' : '🔊');
       const time = formatTime(clip.timestamp);
       const duration = clip.duration ? `${clip.duration.toFixed(1)}s` : '--';
-      const confidence = event.confidence ? `${Math.round(event.confidence * 100)}%` : '';
+      
+      let confidence = '';
+      if (type === 'noise' && event.peakDb) {
+        confidence = `~${Math.round(event.peakDb)} dB`;
+      } else if (event.confidence) {
+        confidence = `${Math.round(event.confidence * 100)}% confidence`;
+      }
 
       return `
         <div class="clip-card clip-card--${type}" data-clip-id="${clip.id}">
@@ -429,8 +543,8 @@ class App {
             </svg>
           </button>
           <div class="clip-info">
-            <div class="clip-type">${icon} ${type === 'snoring' ? 'Snoring' : 'Grinding'}</div>
-            <div class="clip-meta">${time} · ${confidence} confidence</div>
+            <div class="clip-type">${icon} ${type === 'snoring' ? 'Snoring' : (type === 'bruxism' ? 'Grinding' : 'Noise')}</div>
+            <div class="clip-meta">${time} · ${confidence}</div>
           </div>
           <span class="clip-duration">${duration}</span>
         </div>
@@ -501,14 +615,15 @@ class App {
     }
 
     // Aggregate donut data
-    let totalQuiet = 0, totalSnoring = 0, totalBruxism = 0;
+    let totalQuiet = 0, totalSnoring = 0, totalBruxism = 0, totalNoise = 0;
     for (const s of sessions) {
       const sleep = s.totalDuration || ((s.endTime - s.startTime) / 1000) || 0;
       totalSnoring += s.snoringDuration || 0;
       totalBruxism += s.bruxismDuration || 0;
-      totalQuiet += Math.max(0, sleep - (s.snoringDuration || 0) - (s.bruxismDuration || 0));
+      totalNoise += s.noiseDuration || 0;
+      totalQuiet += Math.max(0, sleep - (s.snoringDuration || 0) - (s.bruxismDuration || 0) - (s.noiseDuration || 0));
     }
-    this.donutChart.render({ quiet: totalQuiet, snoring: totalSnoring, bruxism: totalBruxism });
+    this.donutChart.render({ quiet: totalQuiet, snoring: totalSnoring, bruxism: totalBruxism, noise: totalNoise });
 
     // Donut center
     document.querySelector('.donut-value').textContent = sessions.length;
@@ -536,6 +651,7 @@ class App {
       const timeRange = `${formatTime(s.startTime)} — ${s.endTime ? formatTime(s.endTime) : 'In progress'}`;
       const snoringMin = Math.round((s.snoringDuration || 0) / 60);
       const bruxismMin = Math.round((s.bruxismDuration || 0) / 60);
+      const noiseMin = Math.round((s.noiseDuration || 0) / 60);
 
       return `
         <div class="session-item" data-session-id="${s.id}" role="button" tabindex="0">
@@ -553,6 +669,10 @@ class App {
               <span class="session-stat session-stat--bruxism">
                 <span class="session-stat-dot"></span>
                 ${bruxismMin}m grinding
+              </span>
+              <span class="session-stat session-stat--noise">
+                <span class="session-stat-dot"></span>
+                ${noiseMin}m noise
               </span>
             </div>
           </div>
@@ -580,6 +700,9 @@ class App {
     slider.addEventListener('input', () => {
       if (this.engine) {
         this.engine.setSensitivity(slider.value / 100);
+        const desc = this.engine.describeSensitivity(slider.value / 100);
+        document.getElementById('setting-sensitivity-desc').textContent = desc.level;
+        document.getElementById('setting-sensitivity-detail').textContent = desc.description;
       }
     });
 
