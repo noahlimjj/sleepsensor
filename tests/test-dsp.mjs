@@ -81,11 +81,25 @@ export function run() {
     ok(lowEnergy > hiEnergy * 2, '100 Hz tone lands in low mel bands');
   }
 
-  // --- RMS ---
+  // --- RMS / peak / zcr ---
   {
     const buf = new Float32Array(1000).fill(0.5);
     approx(dsp.rms(buf), 0.5, 1e-6, 'RMS of constant 0.5 is 0.5');
     approx(dsp.rms(new Float32Array(1000)), 0, 1e-9, 'RMS of silence is 0');
+
+    const mixed = Float32Array.from([0, 0.9, -0.3, 0.1, -0.95]);
+    approx(dsp.peakAbs(mixed), 0.95, 1e-6, 'peakAbs returns the largest magnitude');
+    approx(dsp.peakAbs(new Float32Array(10)), 0, 1e-9, 'peakAbs of silence is 0');
+
+    const sr = 16000;
+    const lo = new Float32Array(sr);
+    const hi = new Float32Array(sr);
+    for (let i = 0; i < sr; i++) {
+      lo[i] = Math.sin((2 * Math.PI * 100 * i) / sr);
+      hi[i] = Math.sin((2 * Math.PI * 4000 * i) / sr);
+    }
+    ok(dsp.zcr(hi) > dsp.zcr(lo) * 5, 'zero-crossing rate is far higher for a 4 kHz tone than a 100 Hz tone');
+    ok(dsp.zcr(lo) > 0 && dsp.zcr(hi) < 1, 'zcr stays within (0,1)');
   }
 
   pass('DSP module behaves correctly');

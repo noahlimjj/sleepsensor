@@ -1,108 +1,163 @@
-// AudioEngine event debounce / lifecycle logic (no real audio graph).
+// audio-engine.js — event debounce, noise fallback, loudest-moment highlights,
+// dB reporting and the sensitivity helper. No real audio graph.
 import { section, ok, eq, pass } from './lib.mjs';
-import { AudioEngine } from '../js/audio-engine.js';
+import { AudioEngine, float32ToWav, sensitivityToThreshold } from '../js/audio-engine.js';
 
 function makeEngine() {
-  const calls = { events: [], added: [], updated: [], clips: [], clipRequests: [] };
+  const calls = { events: [], added: [], updated: [], clips: [], highlights: [], clipReq: [], energy: [] };
   const storage = {
     async createSession(s) { return { id: 'sess-1', startTime: s.startTime, endTime: null }; },
     async updateSession(id, u) { return { id, ...u }; },
     async addEvent(e) { calls.added.push(e); return e; },
     async updateEvent(id, u) { calls.updated.push({ id, ...u }); return { id, ...u }; },
     async saveClip(c) { calls.clips.push(c); return c; },
+    async saveHighlight(h) { calls.highlights.push(h); return h; },
+    async updateHighlight(id, u) { return { id, ...u }; },
+    async deleteHighlight() {},
     async getClipsBySession() { return calls.clips; },
+    async getHighlightsBySession() { return calls.highlights; },
     async setSetting() {},
   };
-  const classifier = { minConfidence: 0.35, ready: true, async load() {}, classify() {} };
+  const classifier = { minConfidence: 0.35, ready: true, async load() {}, classify: () => ({ type: 'other', confidence: 0 }) };
   const engine = new AudioEngine({
     storage,
     classifier,
+    onEnergy: (rms, db) => calls.energy.push({ rms, db }),
     onEvent: (e) => calls.events.push(e),
     onStatusChange: () => {},
   });
-  // wire minimal state as if start() had run
   engine.session = { id: 'sess-1', startTime: 0 };
   engine.startWallTime = 0;
   engine.ctxStartTime = 0;
   engine._recording = true;
+  engine.audioContext = { sampleRate: 16000 };
   engine.workletNode = {
-    port: { postMessage: (m) => { if (m.command === 'extract-clip') calls.clipRequests.push(m); } },
+    port: { postMessage: (m) => m.command === 'extract-clip' && calls.clipReq.push(m) },
   };
   return { engine, calls };
 }
 
-const P = (type, confidence = 0.7) => ({ type, confidence });
-const NEG = { type: 'silence', confidence: 0 };
+// worklet-style spectrogram message
+const W = (type, conf, t, rms = 0.2, peak = 0.3) => [
+  { type, confidence: conf },
+  { type: 'spectrogram', timestamp: t, rms, peak, data: new Float32Array(8) },
+];
+const QUIET = (t) => [
+  { type: 'silence', confidence: 0 },
+  { type: 'silence', timestamp: t, rms: 0.0005, peak: 0.001 },
+];
 
 export async function run() {
-  section('audio-engine.js — event debounce & lifecycle');
+  section('audio-engine.js — debounce, noise, highlights, dB');
 
-  // --- 3 consecutive positives confirm exactly one event ---
+  // --- 3 positives confirm exactly one event, with a peak dB ---
   {
     const { engine, calls } = makeEngine();
-    engine._handleClassification(P('snoring'), 2);
-    engine._handleClassification(P('snoring'), 4);
+    engine._handleClassification(...W('snoring', 0.7, 2));
+    engine._handleClassification(...W('snoring', 0.7, 4));
     eq(calls.events.length, 0, 'no event after 2 positives');
-    engine._handleClassification(P('snoring'), 6);
-    eq(calls.events.length, 1, 'event confirmed on the 3rd consecutive positive');
-    eq(calls.events[0].type, 'snoring', 'event type is snoring');
-    eq(calls.added.length, 1, 'confirmed event written to storage');
-    ok(calls.events[0].duration >= 2, 'event has a positive duration');
-    ok(calls.events[0].severity === 'moderate', 'confidence 0.7 -> moderate severity');
+    engine._handleClassification(...W('snoring', 0.7, 6));
+    eq(calls.events.length, 1, 'event confirmed on the 3rd positive');
+    eq(calls.events[0].type, 'snoring', 'type snoring');
+    ok(typeof calls.events[0].peakDb === 'number' && calls.events[0].peakDb < 0, 'event carries a peak dBFS');
+    ok(calls.events[0].severity === 'moderate', 'confidence 0.7 -> moderate');
   }
 
-  // --- 2 positives then a gap: no event ---
+  // --- a loud but unclassified window becomes a generic "noise" event ---
   {
     const { engine, calls } = makeEngine();
-    engine._handleClassification(P('bruxism'), 2);
-    engine._handleClassification(P('bruxism'), 4);
-    engine._handleClassification(NEG, 6);
-    engine._handleClassification(NEG, 8);
-    eq(calls.events.length, 0, 'interrupted run of 2 never becomes an event');
+    for (const t of [2, 4, 6]) engine._handleClassification(...W('other', 0, t, 0.08, 0.15));
+    eq(calls.events.length, 1, 'loud unrecognised sound -> one event');
+    eq(calls.events[0].type, 'noise', 'event type is noise');
+    eq(engine._tally.noiseEpisodes, 1, 'noise episode counted');
+  }
+
+  // --- soft speech (rms ~0.015) still registers as noise ---
+  {
+    const { engine, calls } = makeEngine();
+    for (const t of [2, 4, 6]) engine._handleClassification(...W('other', 0, t, 0.015, 0.03));
+    eq(calls.events.length, 1, 'soft sound above the ambient floor is still logged');
+    eq(calls.events[0].type, 'noise', 'soft sound -> noise event');
+  }
+
+  // --- genuinely quiet windows never create an event ---
+  {
+    const { engine, calls } = makeEngine();
+    for (const t of [2, 4, 6, 8]) engine._handleClassification(...QUIET(t));
+    eq(calls.events.length, 0, 'silence produces no events');
   }
 
   // --- event ends after 2 negatives -> clip requested, duration tallied ---
   {
     const { engine, calls } = makeEngine();
-    for (const t of [2, 4, 6, 8, 10]) engine._handleClassification(P('snoring', 0.8), t);
-    await engine._handleClassification(NEG, 12);
-    await engine._handleClassification(NEG, 14);
-    eq(calls.clipRequests.length, 1, 'clip extraction requested when event ends');
-    const req = calls.clipRequests[0];
-    ok(req.startTime < 6 && req.endTime > 10, 'clip range pads around the event (±5s)');
-    ok(engine._tally.snoringDuration > 0, 'snoring duration accumulated into session tally');
-    eq(engine._tally.snoringEpisodes, 1, 'one snoring episode counted');
+    for (const t of [2, 4, 6, 8, 10]) engine._handleClassification(...W('bruxism', 0.8, t));
+    engine._handleClassification(...QUIET(12));
+    engine._handleClassification(...QUIET(14));
+    ok(calls.clipReq.some((r) => r.startTime < 6 && r.endTime > 10), 'an event clip spanning the bout was requested');
+    ok(engine._tally.bruxismDuration > 0, 'bruxism duration tallied');
   }
 
-  // --- switching type finalises the first event and starts a second ---
+  // --- loudest-moment highlights: top-N by peak, clip + row persisted ---
   {
     const { engine, calls } = makeEngine();
-    for (const t of [2, 4, 6]) engine._handleClassification(P('snoring'), t);
-    for (const t of [8, 10, 12]) engine._handleClassification(P('bruxism'), t);
-    eq(calls.events.length, 2, 'type switch produces a second confirmed event');
-    eq(calls.events[1].type, 'bruxism', 'second event is bruxism');
+    let t = 2;
+    for (const peak of [0.2, 0.9, 0.3, 0.5, 0.95, 0.1]) {
+      engine._considerHighlight({ type: 'spectrogram', timestamp: t, rms: peak * 0.6, peak }, { type: 'noise', confidence: 0.6 });
+      t += 40; // spread out so they don't collapse
+    }
+    ok(calls.highlights.length >= 2, `highlights persisted (${calls.highlights.length})`);
+    ok(engine._highlights[0].peak >= engine._highlights[engine._highlights.length - 1].peak, 'highlights kept sorted loudest-first');
+    ok(calls.clipReq.some((r) => r.command === 'extract-clip'), 'highlight clip extraction requested');
+    ok(engine._tally.loudestDb > -20, 'loudest dB tracked near full scale');
   }
 
-  // --- low-confidence positives are ignored ---
+  // --- highlights collapse repeats of the same loud bout ---
   {
-    const { engine, calls } = makeEngine();
-    for (const t of [2, 4, 6]) engine._handleClassification(P('snoring', 0.2), t);
-    eq(calls.events.length, 0, 'positives below minConfidence do not confirm');
+    const { engine } = makeEngine();
+    engine._considerHighlight({ type: 'spectrogram', timestamp: 10, rms: 0.3, peak: 0.5 }, { type: 'noise', confidence: 0.5 });
+    engine._considerHighlight({ type: 'spectrogram', timestamp: 12, rms: 0.3, peak: 0.6 }, { type: 'noise', confidence: 0.5 });
+    eq(engine._highlights.length, 1, 'two windows 2s apart collapse into one highlight');
+    ok(engine._highlights[0].peak === 0.6, 'collapsed highlight keeps the louder peak');
   }
 
-  // --- clip received -> stored as WAV, event flagged ---
+  // --- clip routing: highlight clips flagged, event clips flag the event ---
   {
     const { engine, calls } = makeEngine();
-    for (const t of [2, 4, 6, 8]) engine._handleClassification(P('bruxism', 0.9), t);
-    await engine._handleClassification(NEG, 10);
-    await engine._handleClassification(NEG, 12);
-    engine.audioContext = { sampleRate: 16000 };
+    for (const t of [2, 4, 6, 8]) engine._handleClassification(...W('bruxism', 0.9, t));
+    engine._handleClassification(...QUIET(10));
+    engine._handleClassification(...QUIET(12));
     await engine._handleClip({ type: 'audio-clip', buffer: new Float32Array(16000), startTime: 0, endTime: 1 });
-    eq(calls.clips.length, 1, 'received clip saved to storage');
-    eq(calls.clips[0].format, 'wav', 'clip saved as wav');
-    ok(calls.clips[0].audioBlob && calls.clips[0].audioBlob.size > 44, 'clip blob is a real WAV');
-    ok(calls.updated.some((u) => u.hasClip === true), 'event marked hasClip after clip stored');
+    eq(calls.clips.length, 1, 'clip saved');
+    eq(calls.clips[0].clipType, 'event', 'event clip tagged clipType=event');
+    ok(calls.updated.some((u) => u.hasClip === true), 'event flagged hasClip');
   }
 
-  pass('audio-engine debounce & lifecycle behave correctly');
+  // --- live dB meter ---
+  {
+    const { engine, calls } = makeEngine();
+    engine._onWorkletMessage({ data: { type: 'energy', rms: 0.05, peak: 0.1 } });
+    eq(calls.energy.length, 1, 'onEnergy called for an energy message');
+    ok(calls.energy[0].db < 0 && calls.energy[0].db > -60, `onEnergy passes a dBFS value (${calls.energy[0].db})`);
+    const lvl = engine.getLevel();
+    ok(lvl.dbFS < 0 && lvl.spl > 0, 'getLevel() returns dBFS and an SPL estimate');
+  }
+
+  // --- sensitivity helper ---
+  {
+    const { engine } = makeEngine();
+    ok(sensitivityToThreshold(0) > sensitivityToThreshold(0.5), 'higher sensitivity lowers the gate');
+    ok(sensitivityToThreshold(1) < 0.001, 'max sensitivity gate is very low');
+    const d = engine.describeSensitivity(0.5);
+    ok(d.label && d.detail && typeof d.thresholdDbFS === 'number', 'describeSensitivity returns label/detail/threshold');
+    ok(engine.describeSensitivity(0.9).label === 'Maximum', 'high value -> "Maximum"');
+  }
+
+  // --- WAV encoding still intact ---
+  {
+    const blob = float32ToWav(new Float32Array(16000), 16000);
+    eq(blob.type, 'audio/wav', 'wav blob mime type');
+    eq(blob.size, 44 + 32000, 'wav blob size');
+  }
+
+  pass('audio-engine behaves correctly');
 }

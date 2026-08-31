@@ -1,32 +1,35 @@
 /*
  * classifier.js — SleepSensor
  *
- * MVP heuristic audio classifier. Takes a normalised log-mel spectrogram
- * (128 mel bands x 64 time steps, mel-major, values in [0, 1]) and decides
- * whether the window contains snoring, bruxism (teeth grinding), silence, or
- * something else.
+ * Classifies a 2-second audio window as quiet / snoring / bruxism / noise.
  *
- * This is deliberately a transparent, explainable heuristic rather than a
- * black-box model — it can be swapped for a real TF.js model later without
- * changing the public API. If the global `tf` (TensorFlow.js, loaded from CDN)
- * is present we warm its backend up during load() so a future model swap has
- * no cold-start cost.
+ * Primary path: a tiny MLP (14 audio features -> 24 hidden -> 4 classes) trained
+ * offline on the Kaggle snoring dataset + curated grinding / ambient recordings
+ * (see training/). Weights live in model-weights.js (~5 KB) and inference is a
+ * couple of matrix-vector products — no TensorFlow needed at runtime.
+ *
+ * Fallback path: a transparent hand-tuned heuristic, used if the weights file is
+ * missing or malformed. The public API is identical either way.
  */
 
-const NUM_MEL = 128;
-const TIME_STEPS = 64;
+import { extractFeatures, FEATURE_NAMES } from './features.js';
+import { MODEL as RAW_MODEL } from './model-weights.js';
 
-// Mel-band boundaries. With a 0–8 kHz range over 128 mel bands:
-//   ~500 Hz  -> band ~27   (upper edge of the snoring region)
-//   ~1000 Hz -> band ~45   (lower edge of the bruxism region)
-const LOW_BAND_HI = 30; // bands [0, 30)  ~ low frequency / snoring energy
-const HIGH_BAND_LO = 60; // bands [60, 128) ~ high frequency / grinding energy
+const MODEL =
+  RAW_MODEL &&
+  Array.isArray(RAW_MODEL.w1) &&
+  RAW_MODEL.featureNames &&
+  RAW_MODEL.featureNames.length === FEATURE_NAMES.length
+    ? RAW_MODEL
+    : null;
+
+const CLASSES = MODEL ? MODEL.classes : ['quiet', 'snoring', 'bruxism', 'noise'];
+const QUIET_RMS = 0.0018; // hard floor: below this it is silence regardless
 
 export class Classifier {
   constructor(options = {}) {
-    this.numMel = options.numMel || NUM_MEL;
-    this.timeSteps = options.timeSteps || TIME_STEPS;
     this.minConfidence = options.minConfidence ?? 0.35;
+    this.usingModel = !!MODEL;
     this.ready = false;
     this._tf = typeof tf !== 'undefined' ? tf : null; // eslint-disable-line no-undef
   }
@@ -35,11 +38,8 @@ export class Classifier {
     if (this._tf) {
       try {
         await this._tf.ready();
-        // touch a tiny tensor to force backend init, then free it
-        const t = this._tf.tensor1d([0, 1, 2]);
-        t.dispose();
-      } catch (err) {
-        console.warn('[Classifier] tf warm-up failed, continuing with heuristic only:', err);
+      } catch (_) {
+        /* heuristic/MLP path does not need tf */
       }
     }
     this.ready = true;
@@ -47,182 +47,116 @@ export class Classifier {
   }
 
   /**
-   * @param {Float32Array} spectrogram length numMel*timeSteps, mel-major, [0,1]
-   * @param {{rms?:number}} [opts] optional raw window RMS energy from the worklet.
-   *        The mel spectrogram is loudness-normalised, so the absolute RMS is the
-   *        only reliable silence cue — pass it when available.
-   * @returns {{type:'silence'|'snoring'|'bruxism'|'other', confidence:number, features?:object}}
+   * @param {Float32Array} spectrogram  NUM_MEL*TIME_STEPS, mel-major, [0,1]
+   * @param {{rms?:number, peak?:number, zcr?:number}} [hints]
+   * @returns {{type:'silence'|'snoring'|'bruxism'|'noise', confidence:number, scores?:object, db?:number}}
    */
-  classify(spectrogram, opts = {}) {
-    if (!spectrogram || spectrogram.length < this.numMel) {
-      return { type: 'other', confidence: 0 };
-    }
-    const f = this._features(spectrogram);
+  classify(spectrogram, hints = {}) {
+    if (!spectrogram || spectrogram.length < 64) return { type: 'other', confidence: 0 };
 
-    // --- silence -----------------------------------------------------------
-    // primary: absolute loudness below the quiet-room floor
-    if (typeof opts.rms === 'number' && opts.rms < 0.008) {
-      return { type: 'silence', confidence: clamp01(1 - opts.rms / 0.008), features: f };
-    }
-    // secondary (no RMS available): featureless + very low modulation
-    if (f.meanEnergy < 0.1 && f.maxBandEnergy < 0.15) {
-      return { type: 'silence', confidence: clamp01(1 - f.meanEnergy * 5), features: f };
+    const rms = typeof hints.rms === 'number' ? hints.rms : null;
+    const db = rms != null ? round1(20 * Math.log10(Math.max(rms, 1e-7))) : undefined;
+
+    if (rms != null && rms < QUIET_RMS) {
+      return { type: 'silence', confidence: clamp01(1 - rms / QUIET_RMS), db, scores: { quiet: 1 } };
     }
 
-    // --- snoring ---------------------------------------------------------
-    // low-frequency dominant + amplitude modulated (breath in / out) + tonal
-    const snoreScore =
-      0.45 * norm(f.lowFreqRatio, 0.45, 0.85) +
-      0.30 * norm(f.periodicity, 0.35, 0.8) +
-      0.15 * norm(f.centroidBand, 45, 12) + // lower centroid -> higher score
-      0.10 * norm(1 - f.spectralFlatness, 0.35, 0.85);
+    const feats = extractFeatures(spectrogram, hints);
+    const probs = MODEL ? this._infer(feats) : this._heuristic(feats, rms);
 
-    // --- bruxism -------------------------------------------------------
-    // high-frequency broadband noise, non-periodic, spectrally flat
-    const bruxScore =
-      0.40 * norm(f.highFreqRatio, 0.35, 0.75) +
-      0.25 * norm(f.spectralFlatness, 0.45, 0.85) +
-      0.20 * norm(f.centroidBand, 45, 95) + // higher centroid -> higher score
-      0.15 * norm(1 - f.periodicity, 0.4, 0.85);
+    let arg = 0;
+    for (let i = 1; i < probs.length; i++) if (probs[i] > probs[arg]) arg = i;
+    let type = CLASSES[arg];
+    if (type === 'quiet') type = 'silence';
 
-    const snoreGate = f.lowFreqRatio > 0.6 && f.periodicity > 0.5;
-    const bruxGate = f.highFreqRatio > 0.5 && f.spectralFlatness > 0.6;
-
-    if (snoreGate && snoreScore >= bruxScore) {
-      return { type: 'snoring', confidence: clamp01(snoreScore), features: f };
-    }
-    if (bruxGate) {
-      return { type: 'bruxism', confidence: clamp01(bruxScore), features: f };
-    }
-    // soft fallback: strong single-sided score even if the hard gate missed
-    if (snoreScore > 0.7 && snoreScore > bruxScore) {
-      return { type: 'snoring', confidence: clamp01(snoreScore * 0.85), features: f };
-    }
-    if (bruxScore > 0.7) {
-      return { type: 'bruxism', confidence: clamp01(bruxScore * 0.85), features: f };
-    }
-    return { type: 'other', confidence: clamp01(Math.max(snoreScore, bruxScore)), features: f };
+    const scores = {};
+    CLASSES.forEach((c, i) => (scores[c] = round3(probs[i])));
+    return { type, confidence: round3(probs[arg]), scores, db, features: feats };
   }
 
   dispose() {
-    if (this._tf) {
-      try {
-        this._tf.disposeVariables();
-      } catch (_) {
-        /* noop */
-      }
-    }
     this.ready = false;
   }
 
-  /** Map a confidence score to a coarse severity bucket. */
   static severityFor(confidence) {
     if (confidence < 0.5) return 'mild';
     if (confidence <= 0.75) return 'moderate';
     return 'severe';
   }
 
-  // -----------------------------------------------------------------------
-  // feature extraction
-  // -----------------------------------------------------------------------
-  _features(spec) {
-    const M = this.numMel;
-    const T = this.timeSteps;
+  // ---- MLP inference -------------------------------------------------
+  _infer(f) {
+    const { mean, std, w1, b1, w2, b2, hidden } = MODEL;
+    const x = new Float32Array(f.length);
+    for (let k = 0; k < f.length; k++) x[k] = (f[k] - mean[k]) / (std[k] || 1);
 
-    // per-band mean energy over time, and per-frame energy envelope over bands
-    const bandMean = new Float32Array(M);
-    const envelope = new Float32Array(T);
-    let total = 0;
-    for (let m = 0; m < M; m++) {
-      let acc = 0;
-      for (let t = 0; t < T; t++) {
-        const v = spec[m * T + t];
-        acc += v;
-        envelope[t] += v;
-      }
-      bandMean[m] = acc / T;
-      total += bandMean[m];
+    const h = new Float32Array(hidden);
+    for (let j = 0; j < hidden; j++) {
+      let s = b1[j];
+      const row = w1[j];
+      for (let k = 0; k < x.length; k++) s += row[k] * x[k];
+      h[j] = s > 0 ? s : 0;
     }
-    for (let t = 0; t < T; t++) envelope[t] /= M;
-
-    const totalSafe = total || 1e-9;
-    let low = 0;
-    let high = 0;
-    for (let m = 0; m < M; m++) {
-      if (m < LOW_BAND_HI) low += bandMean[m];
-      if (m >= HIGH_BAND_LO) high += bandMean[m];
+    const K = w2.length;
+    const logit = new Float32Array(K);
+    let mx = -Infinity;
+    for (let c = 0; c < K; c++) {
+      let s = b2[c];
+      const row = w2[c];
+      for (let j = 0; j < hidden; j++) s += row[j] * h[j];
+      logit[c] = s;
+      if (s > mx) mx = s;
     }
-    const lowFreqRatio = low / totalSafe;
-    const highFreqRatio = high / totalSafe;
-
-    // spectral centroid in band units
-    let cNum = 0;
-    for (let m = 0; m < M; m++) cNum += m * bandMean[m];
-    const centroidBand = cNum / totalSafe;
-
-    // spectral flatness = geometric mean / arithmetic mean of band energies
-    let logSum = 0;
-    let arith = 0;
-    for (let m = 0; m < M; m++) {
-      const v = bandMean[m] + 1e-6;
-      logSum += Math.log(v);
-      arith += v;
+    let Z = 0;
+    const p = new Float32Array(K);
+    for (let c = 0; c < K; c++) {
+      p[c] = Math.exp(logit[c] - mx);
+      Z += p[c];
     }
-    const geo = Math.exp(logSum / M);
-    const spectralFlatness = clamp01(geo / (arith / M));
+    for (let c = 0; c < K; c++) p[c] /= Z;
+    return p;
+  }
 
-    // amplitude modulation / periodicity of the energy envelope.
-    // grinding is fairly steady; snoring rises and falls within the window.
-    const envMean = mean(envelope);
-    let envVar = 0;
-    for (let t = 0; t < T; t++) envVar += (envelope[t] - envMean) ** 2;
-    envVar /= T;
-    const modulationDepth = envMean > 1e-6 ? Math.sqrt(envVar) / envMean : 0;
-
-    // normalised autocorrelation peak (excluding lag 0) — captures a repeating
-    // rise/fall pattern typical of breathing cycles.
-    let acPeak = 0;
-    for (let lag = 2; lag < Math.floor(T / 2); lag++) {
-      let num = 0;
-      let den = 0;
-      for (let t = 0; t < T - lag; t++) {
-        num += (envelope[t] - envMean) * (envelope[t + lag] - envMean);
-        den += (envelope[t] - envMean) ** 2;
-      }
-      if (den > 1e-9) acPeak = Math.max(acPeak, num / den);
-    }
-    const periodicity = clamp01(0.5 * clamp01(modulationDepth * 1.6) + 0.5 * clamp01(acPeak));
-
-    const maxBandEnergy = Math.max(...bandMean);
-
-    return {
-      meanEnergy: total / M,
-      maxBandEnergy,
-      lowFreqRatio,
-      highFreqRatio,
-      centroidBand,
-      spectralFlatness,
-      periodicity,
-      modulationDepth,
-    };
+  // ---- heuristic fallback (no weights available) -----------------
+  _heuristic(f, rms) {
+    // f indices follow FEATURE_NAMES in features.js
+    const [lowR, , highR, centroid, , rolloff, flatness, crest, harmon, period, modDepth, flux] = f;
+    const snore = clamp01(
+      0.4 * norm(lowR, 0.4, 0.85) +
+        0.25 * norm(harmon, 0.3, 0.8) +
+        0.2 * norm(period, 0.3, 0.8) +
+        0.15 * norm(crest, 0.2, 0.8)
+    );
+    const brux = clamp01(
+      0.35 * norm(highR, 0.3, 0.75) +
+        0.25 * norm(flatness, 0.45, 0.85) +
+        0.2 * norm(rolloff, 0.5, 0.9) +
+        0.2 * norm(flux, 0.3, 0.85)
+    );
+    const loud = rms == null ? 0.3 : clamp01((rms - 0.02) * 6 + 0.3);
+    const quiet = rms == null ? 0.2 : clamp01(1 - rms / 0.02);
+    const noise = clamp01(loud * (1 - Math.max(snore, brux)) + 0.1 * centroid);
+    return normalize([quiet, snore, brux, noise]);
   }
 }
 
 // ---------------------------------------------------------------------------
-// small numeric helpers
-// ---------------------------------------------------------------------------
 function clamp01(x) {
   return x < 0 ? 0 : x > 1 ? 1 : x;
 }
-function mean(arr) {
-  let s = 0;
-  for (let i = 0; i < arr.length; i++) s += arr[i];
-  return s / (arr.length || 1);
-}
-/** Linear ramp: 0 at `lo`, 1 at `hi`, clamped. Works with lo > hi (inverted). */
 function norm(x, lo, hi) {
   if (lo === hi) return x >= hi ? 1 : 0;
   return clamp01((x - lo) / (hi - lo));
+}
+function normalize(a) {
+  const s = a.reduce((x, y) => x + y, 0) || 1;
+  return a.map((v) => v / s);
+}
+function round1(x) {
+  return Math.round(x * 10) / 10;
+}
+function round3(x) {
+  return Math.round(x * 1000) / 1000;
 }
 
 export default Classifier;

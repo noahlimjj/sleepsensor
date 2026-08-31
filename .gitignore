@@ -11,7 +11,10 @@ scratch/
 tests/fixtures/*.wav
 .env*
 
-# training artifacts
+# training artifacts (audio corpus + intermediate data — not shipped;
+# regenerate with: bash training/fetch-data.sh && npm run train)
 training/audio/
+training/_snoredet/
 training/features*.json
 training/*.wav
+_snoredet/

@@ -49,15 +49,26 @@
 
       const classifier = new Classifier();
       await classifier.load();
-      log('classifier load ok (ready=' + classifier.ready + ')');
+      log('classifier load ok (ready=' + classifier.ready + ', usingModel=' + classifier.usingModel + ')');
 
+      // record every raw classification for diagnostics
+      T.rawClassifications = [];
+      const _origClassify = classifier.classify.bind(classifier);
+      classifier.classify = (spec, hints) => {
+        const r = _origClassify(spec, hints);
+        T.rawClassifications.push({ type: r.type, conf: r.confidence, rms: hints && hints.rms, scores: r.scores });
+        return r;
+      };
+
+      T.dbSamples = [];
       const engine = new AudioEngine({
         classifier,
         storage,
-        onEnergy: () => { T.energyCount++; },
-        onEvent: (e) => { T.events.push(e); log('event: ' + e.type + ' conf=' + e.confidence); },
+        onEnergy: (rms, db) => { T.energyCount++; if (typeof db === 'number') T.dbSamples.push(db); },
+        onEvent: (e) => { T.events.push(e); log('event: ' + e.type + ' conf=' + e.confidence + ' peakDb=' + e.peakDb); },
         onStatusChange: (s, err) => { T.statuses.push(s); T.lastStatus = s; T.lastError = err || null; },
       });
+      T.engine = engine;
 
       T.start = async () => {
         const session = await engine.start();
@@ -70,20 +81,28 @@
         const summary = await engine.stop();
         const clips = await storage.getClipsBySession(summary.sessionId);
         const events = await storage.getEventsBySession(summary.sessionId);
+        const highlights = await storage.getHighlightsBySession(summary.sessionId);
         T.result = {
           energyCount: T.energyCount,
+          dbMin: Math.min(...T.dbSamples),
+          dbMax: Math.max(...T.dbSamples),
           events: T.events,
           statuses: T.statuses,
           summary,
           storedClipCount: clips.length,
+          storedClipTypes: clips.map((c) => c.clipType),
           storedClipSizes: clips.map((c) => c.audioBlob.size),
           storedEventCount: events.length,
+          storedHighlightCount: highlights.length,
+          highlightClipCount: clips.filter((c) => c.clipType === 'highlight').length,
         };
         log('stopped: ' + JSON.stringify(T.result.summary));
         return T.result;
       };
 
       T.setSensitivity = (v) => engine.setSensitivity(v);
+      T.describeSensitivity = (v) => engine.describeSensitivity(v);
+      T.getLevel = () => engine.getLevel();
       T.getElapsed = () => engine.getElapsedTime();
       T.isRecording = () => engine.isRecording();
       T.ready = true;

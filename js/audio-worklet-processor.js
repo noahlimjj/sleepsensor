@@ -208,8 +208,12 @@ function zcr(buf) {
 // ---------------------------------------------------------------------------
 
 if (typeof registerProcessor !== 'undefined' && typeof AudioWorkletProcessor !== 'undefined') {
-  const SR = typeof sampleRate !== 'undefined' ? sampleRate : 16000;
-  const WINDOW_SAMPLES = Math.round(SR * 2); // 2 second classification window
+  // The audio graph runs at the device's native rate (44.1/48 kHz). We resample
+  // to a fixed 16 kHz internally so the spectrogram, features and the trained
+  // model see exactly what they were trained on regardless of hardware.
+  const NATIVE_SR = typeof sampleRate !== 'undefined' ? sampleRate : 16000;
+  const SR = 16000;
+  const WINDOW_SAMPLES = SR * 2; // 2 second classification window
   const ROLLING_SECONDS = 30;
   const ROLLING_SAMPLES = SR * ROLLING_SECONDS;
   const NUM_MEL = 128;
@@ -224,16 +228,35 @@ if (typeof registerProcessor !== 'undefined' && typeof AudioWorkletProcessor !==
       this.window = new Float32Array(WINDOW_SAMPLES);
       this.windowFill = 0;
 
-      // circular rolling buffer of raw audio
+      // circular rolling buffer of resampled (16 kHz) audio
       this.rolling = new Float32Array(ROLLING_SAMPLES);
       this.rollingWrite = 0;
-      this.totalSamples = 0; // total samples ever written
+      this.totalSamples = 0; // total 16 kHz samples ever written
 
       this.melFb = buildMelFilterbank(NUM_MEL, FFT_SIZE, SR);
 
       this.frameCounter = 0;
 
+      // linear resampler state
+      this._rsRatio = NATIVE_SR / SR;
+      this._rsPhase = 0;
+
       this.port.onmessage = (e) => this._onMessage(e.data || {});
+    }
+
+    _resample(chan) {
+      if (NATIVE_SR === SR) return chan;
+      const ratio = this._rsRatio;
+      const out = new Float32Array(Math.ceil(chan.length / ratio) + 2);
+      let n = 0;
+      let pos = this._rsPhase < 0 ? 0 : this._rsPhase;
+      for (; pos < chan.length - 1; pos += ratio) {
+        const i0 = pos | 0;
+        const frac = pos - i0;
+        out[n++] = chan[i0] * (1 - frac) + chan[i0 + 1] * frac;
+      }
+      this._rsPhase = pos - chan.length;
+      return out.subarray(0, n);
     }
 
     _onMessage(msg) {
@@ -308,14 +331,16 @@ if (typeof registerProcessor !== 'undefined' && typeof AudioWorkletProcessor !==
     process(inputs) {
       const input = inputs[0];
       if (!input || input.length === 0 || !input[0]) return true;
-      const chan = input[0];
+      const chan = this._resample(input[0]);
+      if (chan.length === 0) return true;
 
       this._writeRolling(chan);
 
-      // per-frame RMS for live visualisation (~62 Hz, every other render quantum)
+      // per-frame level for the live meter (~62 Hz, every other render quantum)
       this.frameCounter++;
       if (this.frameCounter % 2 === 0) {
-        this.port.postMessage({ type: 'energy', rms: rms(chan) });
+        const r = rms(chan);
+        this.port.postMessage({ type: 'energy', rms: r, peak: peakAbs(chan) });
       }
 
       // accumulate into the 2s window
