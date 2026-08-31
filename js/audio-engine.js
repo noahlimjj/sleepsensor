@@ -225,7 +225,7 @@ export class AudioEngine {
       case 'spectrogram': {
         let result;
         try {
-          result = this.classifier.classify(msg.data);
+          result = this.classifier.classify(msg.data, { rms: msg.rms });
         } catch (err) {
           console.warn('[AudioEngine] classify failed:', err);
           result = { type: 'other', confidence: 0 };

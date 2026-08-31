@@ -1,0 +1,13 @@
+{
+  "name": "sleepsensor",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "SleepSensor — on-device web app that detects snoring and bruxism (teeth grinding) overnight.",
+  "scripts": {
+    "test": "node tests/run-all.mjs",
+    "test:browser": "node tests/browser-integration.mjs",
+    "build": "node -e \"console.log('static site — nothing to build')\""
+  },
+  "license": "MIT"
+}

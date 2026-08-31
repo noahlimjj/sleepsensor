@@ -48,15 +48,23 @@ export class Classifier {
 
   /**
    * @param {Float32Array} spectrogram length numMel*timeSteps, mel-major, [0,1]
+   * @param {{rms?:number}} [opts] optional raw window RMS energy from the worklet.
+   *        The mel spectrogram is loudness-normalised, so the absolute RMS is the
+   *        only reliable silence cue — pass it when available.
    * @returns {{type:'silence'|'snoring'|'bruxism'|'other', confidence:number, features?:object}}
    */
-  classify(spectrogram) {
+  classify(spectrogram, opts = {}) {
     if (!spectrogram || spectrogram.length < this.numMel) {
       return { type: 'other', confidence: 0 };
     }
     const f = this._features(spectrogram);
 
     // --- silence -----------------------------------------------------------
+    // primary: absolute loudness below the quiet-room floor
+    if (typeof opts.rms === 'number' && opts.rms < 0.008) {
+      return { type: 'silence', confidence: clamp01(1 - opts.rms / 0.008), features: f };
+    }
+    // secondary (no RMS available): featureless + very low modulation
     if (f.meanEnergy < 0.1 && f.maxBandEnergy < 0.15) {
       return { type: 'silence', confidence: clamp01(1 - f.meanEnergy * 5), features: f };
     }

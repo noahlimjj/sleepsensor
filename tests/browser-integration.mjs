@@ -1,0 +1,224 @@
+// Real-browser integration test: loads the actual modules in Chromium with a
+// fake microphone fed synthetic snoring audio, runs the pipeline end to end,
+// and checks that energy, classification, events, clips and the session summary
+// all flow through correctly. Also smoke-tests index.html + service worker.
+import { createServer } from 'http';
+import { readFile, stat } from 'fs/promises';
+import { existsSync } from 'fs';
+import { join, extname } from 'path';
+import { fileURLToPath } from 'url';
+import { execFileSync } from 'child_process';
+import { createRequire } from 'module';
+
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
+const PW = '/Users/User/.nvm/versions/node/v22.18.0/lib/node_modules/playwright/index.js';
+
+const MIME = {
+  '.html': 'text/html',
+  '.js': 'text/javascript',
+  '.mjs': 'text/javascript',
+  '.json': 'application/json',
+  '.css': 'text/css',
+  '.wav': 'audio/wav',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+};
+
+let failures = 0;
+const check = (cond, msg) => {
+  console.log(`  ${cond ? '✓' : '✗'} ${msg}`);
+  if (!cond) failures++;
+};
+
+async function main() {
+  // 1. ensure the fake-audio fixture exists
+  const wav = join(ROOT, 'tests/fixtures/snore.wav');
+  if (!existsSync(wav)) {
+    console.log('generating fake-audio fixture...');
+    execFileSync('node', [join(ROOT, 'tests/fixtures/gen-audio.mjs')], { stdio: 'inherit' });
+  }
+
+  // 2. static file server
+  const server = createServer(async (req, res) => {
+    try {
+      let p = decodeURIComponent(req.url.split('?')[0]);
+      if (p === '/') p = '/index.html';
+      const fpath = join(ROOT, p);
+      if (!fpath.startsWith(ROOT)) {
+        res.writeHead(403).end('no');
+        return;
+      }
+      const s = await stat(fpath).catch(() => null);
+      if (!s || !s.isFile()) {
+        res.writeHead(404).end('not found');
+        return;
+      }
+      const body = await readFile(fpath);
+      res.writeHead(200, {
+        'content-type': MIME[extname(fpath)] || 'application/octet-stream',
+        'service-worker-allowed': '/',
+      });
+      res.end(body);
+    } catch (err) {
+      res.writeHead(500).end(String(err));
+    }
+  });
+  await new Promise((r) => server.listen(0, r));
+  const base = `http://localhost:${server.address().port}`;
+  console.log(`server on ${base}`);
+
+  const { chromium } = createRequire(import.meta.url)(PW);
+  const browser = await chromium.launch({
+    args: [
+      '--use-fake-device-for-media-stream',
+      '--use-fake-ui-for-media-stream',
+      '--autoplay-policy=no-user-gesture-required',
+    ],
+  });
+
+  try {
+    const ctx = await browser.newContext({ permissions: ['microphone'] });
+
+    // ---- A. pipeline harness ----------------------------------------
+    console.log('\n▸ end-to-end audio pipeline');
+    const page = await ctx.newPage();
+    const consoleErrors = [];
+    page.on('console', (m) => {
+      if (process.env.PW_VERBOSE) console.log(`    [page:${m.type()}] ${m.text()}`);
+      if (m.type() === 'error') consoleErrors.push(m.text());
+    });
+    page.on('pageerror', (e) => consoleErrors.push(String(e)));
+
+    await page.goto(`${base}/tests/harness.html`);
+    await page.waitForFunction(() => window.__test && (window.__test.ready || window.__test.fatal), null, {
+      timeout: 15000,
+    });
+    const fatal = await page.evaluate(() => window.__test.fatal);
+    check(!fatal, `harness initialised without fatal error${fatal ? ': ' + fatal : ''}`);
+
+    await page.evaluate(() =>
+      Promise.race([
+        window.__test.start(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('start() timed out')), 20000)),
+      ])
+    );
+    await page.waitForTimeout(1500);
+    const elapsed = await page.evaluate(() => window.__test.getElapsed());
+    check(elapsed > 0.5, `getElapsedTime advances while recording (${elapsed.toFixed(2)}s)`);
+
+    // let the synthetic snoring run through several 2s classification windows
+    await page.waitForTimeout(11000);
+
+    const result = await page.evaluate(() => window.__test.stop());
+
+    check(result.energyCount > 50, `onEnergy fired repeatedly (${result.energyCount} times)`);
+    check(result.statuses.includes('recording'), 'status went through "recording"');
+    check(result.statuses.includes('idle'), 'status returned to "idle" after stop');
+    check(result.events.length >= 1, `at least one event detected (${result.events.length})`);
+    check(
+      result.events.every((e) => e.type === 'snoring' || e.type === 'bruxism'),
+      'all events are snoring/bruxism'
+    );
+    check(
+      result.events.some((e) => e.type === 'snoring'),
+      'the synthetic snore produced a snoring event'
+    );
+    check(
+      result.events.every((e) => e.confidence >= 0 && e.confidence <= 1),
+      'event confidences are in [0,1]'
+    );
+    check(
+      result.events.every((e) => ['mild', 'moderate', 'severe'].includes(e.severity)),
+      'event severities are valid'
+    );
+
+    const sum = result.summary;
+    check(sum.sessionId && typeof sum.sessionId === 'string', 'summary has a sessionId');
+    check(sum.totalDuration > 10, `summary.totalDuration is sane (${sum.totalDuration.toFixed(1)}s)`);
+    check(sum.snoringEpisodes === result.events.filter((e) => e.type === 'snoring').length, 'snoringEpisodes matches events');
+    check(sum.snoringDuration > 0, `summary.snoringDuration > 0 (${sum.snoringDuration}s)`);
+    check(
+      sum.snoringPercentage >= 0 && sum.snoringPercentage <= 100,
+      `summary.snoringPercentage in range (${sum.snoringPercentage}%)`
+    );
+    check(sum.endTime > sum.startTime, 'summary.endTime after startTime');
+
+    check(result.storedEventCount >= 1, `events persisted to IndexedDB (${result.storedEventCount})`);
+    check(result.storedClipCount >= 1, `audio clip(s) persisted to IndexedDB (${result.storedClipCount})`);
+    check(
+      result.storedClipSizes.every((n) => n > 44),
+      `stored clips are non-empty WAVs (${JSON.stringify(result.storedClipSizes)})`
+    );
+    check(consoleErrors.length === 0, `no console errors during pipeline run${consoleErrors.length ? ': ' + consoleErrors.join(' | ') : ''}`);
+
+    // ---- B. index.html + service worker smoke test -----------------
+    console.log('\n▸ app shell + service worker');
+    const app = await ctx.newPage();
+    const appErrors = [];
+    app.on('console', (m) => {
+      if (m.type() === 'error') appErrors.push(m.text());
+    });
+    app.on('pageerror', (e) => appErrors.push(String(e)));
+    await app.goto(`${base}/`, { waitUntil: 'load' });
+    await app.waitForTimeout(2500);
+
+    const splashHidden = await app.evaluate(() => {
+      const el = document.getElementById('app');
+      return el && !el.hasAttribute('hidden');
+    });
+    check(splashHidden, 'app initialised past the splash screen');
+
+    const swReady = await app.evaluate(async () => {
+      if (!('serviceWorker' in navigator)) return 'unsupported';
+      try {
+        const reg = await Promise.race([
+          navigator.serviceWorker.ready.then(() => 'ready'),
+          new Promise((r) => setTimeout(() => r('timeout'), 5000)),
+        ]);
+        return reg;
+      } catch (e) {
+        return 'error:' + e;
+      }
+    });
+    check(swReady === 'ready', `service worker registered and active (${swReady})`);
+
+    const dbOpened = await app.evaluate(
+      () =>
+        new Promise((resolve) => {
+          const r = indexedDB.open('sleepsensor-db');
+          r.onsuccess = () => {
+            const names = Array.from(r.result.objectStoreNames);
+            r.result.close();
+            resolve(names);
+          };
+          r.onerror = () => resolve([]);
+        })
+    );
+    check(
+      ['sessions', 'events', 'clips', 'settings'].every((n) => dbOpened.includes(n)),
+      `IndexedDB schema created: ${JSON.stringify(dbOpened)}`
+    );
+
+    const benignError = (t) => /tf|tensorflow|fonts\.g|Failed to load resource/i.test(t);
+    const realAppErrors = appErrors.filter((e) => !benignError(e));
+    check(
+      realAppErrors.length === 0,
+      `no unexpected console errors in the app${realAppErrors.length ? ': ' + realAppErrors.join(' | ') : ''}`
+    );
+  } finally {
+    await browser.close();
+    server.close();
+  }
+
+  console.log(`\n${'─'.repeat(48)}`);
+  if (failures) {
+    console.log(`  browser integration: ${failures} check(s) failed`);
+    process.exit(1);
+  }
+  console.log('  browser integration: all checks passed');
+}
+
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

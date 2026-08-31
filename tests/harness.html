@@ -1,0 +1,98 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>SleepSensor test harness</title></head>
+<body>
+<h1>SleepSensor backend integration harness</h1>
+<pre id="log"></pre>
+<script type="module">
+  import { AudioEngine } from '../js/audio-engine.js';
+  import { Classifier } from '../js/classifier.js';
+  import { Storage } from '../js/storage.js';
+
+  const log = (m) => {
+    document.getElementById('log').textContent += m + '\n';
+    console.log('[harness] ' + m);
+  };
+  const T = (window.__test = { ready: false, energyCount: 0, events: [], statuses: [] });
+
+  // Headless Chromium's fake audio capture pipeline stalls, so we substitute a
+  // deterministic MediaStream sourced from a looped WAV of synthetic snoring.
+  // Everything downstream of the mic (AudioContext, worklet, classifier,
+  // storage, clip extraction) is the real, unmodified code path.
+  async function installFakeMic(src) {
+    const probe = new AudioContext();
+    const resp = await fetch(src);
+    const audioBuf = await probe.decodeAudioData(await resp.arrayBuffer());
+    navigator.mediaDevices.getUserMedia = async () => {
+      const ac = new AudioContext();
+      const dest = ac.createMediaStreamDestination();
+      const node = ac.createBufferSource();
+      node.buffer = audioBuf;
+      node.loop = true;
+      node.connect(dest);
+      node.start();
+      if (ac.state === 'suspended') await ac.resume();
+      T._fakeMicCtx = ac;
+      return dest.stream;
+    };
+    log('fake mic installed (' + audioBuf.duration.toFixed(1) + 's loop @ ' + audioBuf.sampleRate + 'Hz)');
+  }
+
+  (async () => {
+    try {
+      await installFakeMic('./fixtures/snore.wav');
+
+      const storage = new Storage();
+      await storage.init();
+      await storage.clearAll();
+      log('storage init ok');
+
+      const classifier = new Classifier();
+      await classifier.load();
+      log('classifier load ok (ready=' + classifier.ready + ')');
+
+      const engine = new AudioEngine({
+        classifier,
+        storage,
+        onEnergy: () => { T.energyCount++; },
+        onEvent: (e) => { T.events.push(e); log('event: ' + e.type + ' conf=' + e.confidence); },
+        onStatusChange: (s, err) => { T.statuses.push(s); T.lastStatus = s; T.lastError = err || null; },
+      });
+
+      T.start = async () => {
+        const session = await engine.start();
+        T.sessionId = session.id;
+        log('recording started, session ' + session.id);
+        return session.id;
+      };
+
+      T.stop = async () => {
+        const summary = await engine.stop();
+        const clips = await storage.getClipsBySession(summary.sessionId);
+        const events = await storage.getEventsBySession(summary.sessionId);
+        T.result = {
+          energyCount: T.energyCount,
+          events: T.events,
+          statuses: T.statuses,
+          summary,
+          storedClipCount: clips.length,
+          storedClipSizes: clips.map((c) => c.audioBlob.size),
+          storedEventCount: events.length,
+        };
+        log('stopped: ' + JSON.stringify(T.result.summary));
+        return T.result;
+      };
+
+      T.setSensitivity = (v) => engine.setSensitivity(v);
+      T.getElapsed = () => engine.getElapsedTime();
+      T.isRecording = () => engine.isRecording();
+      T.ready = true;
+      log('harness ready');
+    } catch (err) {
+      T.fatal = String(err && err.stack ? err.stack : err);
+      log('FATAL ' + T.fatal);
+    }
+  })();
+</script>
+</body>
+</html>
