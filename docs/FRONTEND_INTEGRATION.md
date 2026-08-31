@@ -1,8 +1,10 @@
 # Backend → Frontend integration notes
 
-Changes the engine/backend just shipped that the UI should surface. Contract is
-backward compatible — nothing breaks if you ignore these — but several user
-requests need UI work only you can do.
+**Status: integrated.** §1–13 below are wired into `js/app.js` and verified by
+`npm run test:ui` (`tests/frontend-ui.mjs` + `tests/frontend-edge.mjs`). This
+doc is now the reference for the contract, not a TODO list.
+
+Contract is backward compatible — nothing breaks if a field is ignored.
 
 ## 1. Microphone "permission denied" was often false
 
