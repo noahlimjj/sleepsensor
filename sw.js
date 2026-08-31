@@ -14,7 +14,7 @@
  *               network-first (falling back to cache) for everything else
  */
 
-const CACHE_NAME = 'sleepsensor-v2';
+const CACHE_NAME = 'sleepsensor-v3';
 
 const APP_SHELL = [
   '/',

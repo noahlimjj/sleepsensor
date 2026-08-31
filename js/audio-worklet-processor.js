@@ -185,6 +185,24 @@ function rms(buf, from = 0, to = buf.length) {
   return Math.sqrt(acc / n);
 }
 
+function peakAbs(buf) {
+  let m = 0;
+  for (let i = 0; i < buf.length; i++) {
+    const a = buf[i] < 0 ? -buf[i] : buf[i];
+    if (a > m) m = a;
+  }
+  return m;
+}
+
+// zero-crossing rate — high for noise/grinding, low for tonal snoring
+function zcr(buf) {
+  let c = 0;
+  for (let i = 1; i < buf.length; i++) {
+    if ((buf[i - 1] >= 0) !== (buf[i] >= 0)) c++;
+  }
+  return c / Math.max(1, buf.length - 1);
+}
+
 // ---------------------------------------------------------------------------
 // Worklet processor (only defined when running in the audio thread)
 // ---------------------------------------------------------------------------
@@ -265,9 +283,11 @@ if (typeof registerProcessor !== 'undefined' && typeof AudioWorkletProcessor !==
 
     _processWindow() {
       const energy = rms(this.window);
+      const peak = peakAbs(this.window);
+      const zc = zcr(this.window);
       const timestamp = currentTime;
       if (energy < this.threshold) {
-        this.port.postMessage({ type: 'silence', timestamp, rms: energy });
+        this.port.postMessage({ type: 'silence', timestamp, rms: energy, peak, zcr: zc });
       } else {
         const spec = melSpectrogram(this.window, {
           fftSize: FFT_SIZE,
@@ -278,7 +298,7 @@ if (typeof registerProcessor !== 'undefined' && typeof AudioWorkletProcessor !==
           melFb: this.melFb,
         });
         this.port.postMessage(
-          { type: 'spectrogram', data: spec, timestamp, rms: energy },
+          { type: 'spectrogram', data: spec, timestamp, rms: energy, peak, zcr: zc },
           [spec.buffer]
         );
       }
@@ -327,5 +347,7 @@ if (typeof module !== 'undefined' && module.exports) {
     buildMelFilterbank,
     melSpectrogram,
     rms,
+    peakAbs,
+    zcr,
   };
 }

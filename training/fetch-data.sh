@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Downloads short audio samples for classifier training and converts them to
-# 16 kHz mono WAV. Audio is used only for local feature extraction — it is NOT
-# committed to the repo (training/audio/ is gitignored).
+# Downloads short audio samples for classifier training, converts to 16 kHz mono
+# WAV. Audio is used only for local feature extraction — NOT committed to the
+# repo (training/audio/ is gitignored). Re-running skips files already present.
 #
 # Usage:  bash training/fetch-data.sh
 set -u
@@ -9,48 +9,43 @@ cd "$(dirname "$0")"
 
 OUT=audio
 mkdir -p "$OUT"/{snoring,bruxism,other}
-
-# how many search results to try per query, and how many seconds to keep
-N=4
-SECS=90
+SECS=120
 
 dl () {
   local label="$1"; shift
+  local n="$1"; shift
   local query="$1"; shift
-  echo "── [$label] $query"
-  yt-dlp --quiet --no-warnings --no-playlist \
-    --match-filter "duration < 3600" \
-    -f "bestaudio/best" \
-    -x --audio-format wav \
+  echo "── [$label] ($n) $query"
+  yt-dlp --no-warnings --no-playlist --ignore-errors \
+    --download-archive "$OUT/.archive" \
+    --match-filter "duration < 5400" \
+    --extractor-args "youtube:player_client=android,tv,web_safari" \
+    --retries 8 --fragment-retries 8 \
+    -f "bestaudio/best" -x --audio-format wav \
     --postprocessor-args "ffmpeg:-ar 16000 -ac 1 -t ${SECS}" \
     -o "$OUT/$label/%(id)s.%(ext)s" \
-    "ytsearch${N}:${query}" 2>&1 | grep -E "Destination|Extract|ERROR" || true
+    "ytsearch${n}:${query}" 2>&1 | grep -E "Destination|ERROR|has already" | head -12 || true
 }
 
-# --- snoring ---------------------------------------------------------------
-dl snoring "loud snoring sound effect"
-dl snoring "snoring sounds for sleeping 1 hour"
-dl snoring "heavy snoring man recording"
-dl snoring "light snoring sound asmr"
-dl snoring "snoring sound effect free"
+dl snoring 5 "loud snoring sound effect"
+dl snoring 4 "snoring sounds for sleeping 1 hour"
+dl snoring 4 "real heavy snoring recording"
+dl snoring 3 "light snoring asmr"
 
-# --- bruxism / teeth grinding -------------------------------------------
-dl bruxism "teeth grinding sound bruxism"
-dl bruxism "the sound of tooth grinding"
-dl bruxism "bruxism sleep recording audio"
-dl bruxism "teeth grinding asmr sound"
-dl bruxism "night guard teeth grinding noise"
+dl bruxism 5 "teeth grinding sound effect"
+dl bruxism 5 "the sound of tooth grinding bruxism"
+dl bruxism 4 "teeth grinding asmr"
+dl bruxism 4 "bruxism night recording teeth grinding"
+dl bruxism 3 "grinding teeth sound close up mic"
 
-# --- other (so the model doesn't call everything snore/grind) ------------
-dl other "person breathing deeply sleep no snoring"
-dl other "box fan white noise"
-dl other "rain sound sleeping"
-dl other "quiet bedroom room tone ambience"
-dl other "coughing and clearing throat sound"
-dl other "talking in sleep sleeptalking recording"
+dl other 3 "deep breathing sleep no snore"
+dl other 3 "box fan white noise 1 hour"
+dl other 3 "rain on window sleep sound"
+dl other 3 "quiet room tone ambience"
+dl other 2 "coughing sound effect"
+dl other 2 "sleep talking recording"
 
 echo
-echo "downloaded:"
 for d in snoring bruxism other; do
-  printf "  %-9s %s files\n" "$d" "$(ls "$OUT/$d" 2>/dev/null | wc -l | tr -d ' ')"
+  printf "  %-9s %s files\n" "$d" "$(ls "$OUT/$d"/*.wav 2>/dev/null | wc -l | tr -d ' ')"
 done

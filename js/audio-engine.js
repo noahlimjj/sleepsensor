@@ -2,32 +2,47 @@
  * audio-engine.js — SleepSensor
  *
  * Owns the microphone → AudioWorklet → Classifier → Storage pipeline for a
- * night of monitoring. The frontend constructs one AudioEngine, wires up three
+ * night of monitoring. The frontend constructs one AudioEngine, wires up the
  * callbacks, and calls start()/stop().
  *
  *   const engine = new AudioEngine({
  *     classifier, storage,
  *     onEnergy:       (rms) => {},
- *     onEvent:        (event) => {},
- *     onStatusChange: (status, error) => {},
+ *     onEvent:        (event) => {},   // { type:'snoring'|'bruxism'|'noise', ... }
+ *     onStatusChange: (status, info) => {},
  *   });
  *
- * All audio stays on the device. Only short WAV clips around flagged events are
- * persisted (in IndexedDB); the full night is never recorded.
+ * All audio stays on the device. Only short WAV clips around flagged events and
+ * around the loudest moments of the night are persisted (IndexedDB); the full
+ * night is never recorded.
  */
 
 import { WakeLock } from './wake-lock.js';
 import { Classifier } from './classifier.js';
 
 const TARGET_SAMPLE_RATE = 16000;
-const POSITIVE_TYPES = new Set(['snoring', 'bruxism']);
+const POSITIVE_TYPES = new Set(['snoring', 'bruxism', 'noise']);
 
-// debounce tuning
-const CONFIRM_COUNT = 3; // consecutive positives to confirm an event
+// event debounce tuning
+const CONFIRM_COUNT = 3; // consecutive positive windows to confirm an event
 const CONFIRM_WINDOW_MS = 6000; // positives must be within this gap
 const END_NEGATIVE_STREAK = 2; // consecutive negatives that end an event
 const CLIP_PAD_SEC = 5; // seconds of audio kept either side of an event
 const WINDOW_SEC = 2; // classification window length
+
+// "loud sound" fallback: a window that is clearly loud but the classifier does
+// not recognise as snoring/bruxism is still logged as a generic noise event
+// (coughing, talking, a door, a baby, traffic …).
+const LOUD_NOISE_RMS = 0.05;
+
+// loudest-moment highlights
+const MAX_HIGHLIGHTS = 12;
+const HIGHLIGHT_MIN_RMS = 0.03; // ignore quiet nights entirely
+const HIGHLIGHT_MIN_GAP_MS = 25000; // collapse repeats of the same loud bout
+const HIGHLIGHT_PAD_SEC = 3;
+
+// background-resilience watchdog
+const STALL_TIMEOUT_MS = 9000; // no worklet audio for this long => try to recover
 
 export class AudioEngine {
   constructor({ classifier, storage, onEnergy, onEvent, onStatusChange } = {}) {
@@ -47,6 +62,7 @@ export class AudioEngine {
     this.sourceNode = null;
     this.workletNode = null;
     this.sinkNode = null;
+    this.keepAlive = null;
 
     this.session = null;
     this.startWallTime = 0;
@@ -58,16 +74,20 @@ export class AudioEngine {
     // debounce state
     this._pending = null;
     this._negativeStreak = 0;
-    this._clipQueue = []; // FIFO of { eventId } awaiting worklet audio-clip replies
+    this._clipQueue = []; // FIFO matching worklet 'audio-clip' replies -> { kind, id, sessionId }
+
+    // loudest-moment highlights (kept sorted, loudest first)
+    this._highlights = [];
 
     // running session tallies
-    this._tally = {
-      snoringEpisodes: 0,
-      bruxismEpisodes: 0,
-      snoringDuration: 0,
-      bruxismDuration: 0,
-    };
+    this._tally = freshTally();
 
+    // background resilience
+    this._lastAudioAt = 0;
+    this._watchdog = null;
+    this._suspendedSince = 0;
+    this._onVisibility = this._handleVisibility.bind(this);
+    this._onCtxStateChange = this._handleCtxStateChange.bind(this);
     this._onWorkletMessage = this._onWorkletMessage.bind(this);
   }
 
@@ -91,27 +111,65 @@ export class AudioEngine {
     return this.noiseGate;
   }
 
+  /** Current OS-level microphone permission, when the browser exposes it. */
+  async permissionState() {
+    try {
+      if (navigator.permissions && navigator.permissions.query) {
+        const s = await navigator.permissions.query({ name: 'microphone' });
+        return s.state; // 'granted' | 'denied' | 'prompt'
+      }
+    } catch (_) {
+      /* Safari throws for 'microphone' */
+    }
+    return 'unknown';
+  }
+
+  /** Honest, human-readable note about screen-off recording on this device. */
+  backgroundGuidance() {
+    const ua = navigator.userAgent || '';
+    const iOS = /iP(hone|ad|od)/.test(ua) || (/(Mac)/.test(ua) && navigator.maxTouchPoints > 1);
+    if (iOS) {
+      return {
+        canRunScreenOff: false,
+        text:
+          'iPhone/iPad browsers pause audio when the screen locks. Keep SleepSensor ' +
+          'open with the screen on (it will dim) and the phone on a charger. The ' +
+          'screen-wake lock is enabled automatically.',
+      };
+    }
+    return {
+      canRunScreenOff: false,
+      text:
+        'Keep SleepSensor open in the foreground with the phone on a charger. The ' +
+        'screen-wake lock keeps the display dimly on so recording continues. Fully ' +
+        'locking the screen may pause capture until you wake the phone.',
+    };
+  }
+
   async start() {
     if (this._recording) return this.session;
     this._setStatus('requesting');
+
+    // 1. microphone FIRST — before any await that could break the user-gesture
+    //    chain on iOS Safari (a common cause of a false "permission denied").
+    let stream;
     try {
-      if (!this.classifier) {
-        this.classifier = new Classifier();
-      }
-      if (!this.classifier.ready) await this.classifier.load();
+      stream = await openMicrophone();
+    } catch (err) {
+      const info = describeMicError(err);
+      this._setStatus('error', info.message, info);
+      const e = new Error(info.message);
+      e.name = info.name;
+      throw e;
+    }
+    this.mediaStream = stream;
 
-      this.mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          sampleRate: TARGET_SAMPLE_RATE,
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-        },
-      });
-
+    try {
+      // 2. audio graph at the device's native rate (forcing 16 kHz throws on
+      //    some iOS versions); the worklet reads the real rate at runtime.
       const Ctx = window.AudioContext || window.webkitAudioContext;
-      this.audioContext = new Ctx({ sampleRate: TARGET_SAMPLE_RATE });
+      this.audioContext = new Ctx();
+      this.audioContext.addEventListener('statechange', this._onCtxStateChange);
       if (this.audioContext.state === 'suspended') await this.audioContext.resume();
 
       const workletUrl = new URL('./audio-worklet-processor.js', import.meta.url);
@@ -121,45 +179,50 @@ export class AudioEngine {
       this.workletNode = new AudioWorkletNode(this.audioContext, 'sleep-audio-processor');
       this.workletNode.port.onmessage = this._onWorkletMessage;
 
-      // keep the graph pulling audio without echoing anything to the speakers
+      // keep the render graph pulling audio without echoing to the speakers
       this.sinkNode = this.audioContext.createGain();
       this.sinkNode.gain.value = 0;
       this.sourceNode.connect(this.workletNode);
       this.workletNode.connect(this.sinkNode);
       this.sinkNode.connect(this.audioContext.destination);
 
+      // a silent looping source helps some browsers keep the audio thread warm
+      this._startKeepAlive();
+
       this.workletNode.port.postMessage({ command: 'set-threshold', value: this.noiseGate });
 
-      // timing reference: map worklet currentTime (seconds) <-> wall clock (ms)
+      // 3. everything that can safely happen after we hold the mic
+      if (!this.classifier) this.classifier = new Classifier();
+      if (!this.classifier.ready) await this.classifier.load();
+
       this.startWallTime = Date.now();
       this.ctxStartTime = this.audioContext.currentTime;
+      this._lastAudioAt = Date.now();
 
-      // persist a session row
       if (this.storage) {
         this.session = await this.storage.createSession({ startTime: this.startWallTime });
       } else {
         this.session = { id: cryptoId(), startTime: this.startWallTime, endTime: null };
       }
 
-      // reset per-session state
       this._pending = null;
       this._negativeStreak = 0;
       this._clipQueue = [];
-      this._tally = {
-        snoringEpisodes: 0,
-        bruxismEpisodes: 0,
-        snoringDuration: 0,
-        bruxismDuration: 0,
-      };
+      this._highlights = [];
+      this._tally = freshTally();
+      this._suspendedSince = 0;
 
       await this.wakeLock.acquire();
+      document.addEventListener('visibilitychange', this._onVisibility);
+      this._startWatchdog();
 
       this._recording = true;
       this._setStatus('recording');
       return this.session;
     } catch (err) {
-      await this._teardownAudio();
-      this._setStatus('error', err && err.message ? err.message : String(err));
+      await this._teardown();
+      const msg = err && err.message ? err.message : String(err);
+      this._setStatus('error', 'Could not start the audio engine: ' + msg, { name: err?.name });
       throw err;
     }
   }
@@ -168,44 +231,52 @@ export class AudioEngine {
     if (!this._recording) return null;
     this._recording = false;
 
-    // finalise any event still in progress
-    await this._finalizePending();
+    this._stopWatchdog();
+    document.removeEventListener('visibilitychange', this._onVisibility);
 
-    // give the worklet a moment to answer outstanding clip requests
-    if (this._clipQueue.length) await delay(400);
+    await this._finalizePending();
+    if (this._clipQueue.length) await delay(500); // let outstanding clips arrive
 
     await this.wakeLock.release();
-    await this._teardownAudio();
+    await this._teardown();
 
     const endTime = Date.now();
     const startTime = this.session ? this.session.startTime : this.startWallTime;
     const totalDuration = Math.max(0, (endTime - startTime) / 1000);
+    const t = this._tally;
+    const pct = (d) => (totalDuration ? round1((d / totalDuration) * 100) : 0);
+
     const summaryPatch = {
       endTime,
       totalDuration,
-      snoringDuration: round1(this._tally.snoringDuration),
-      bruxismDuration: round1(this._tally.bruxismDuration),
-      snoringEpisodes: this._tally.snoringEpisodes,
-      bruxismEpisodes: this._tally.bruxismEpisodes,
-      snoringPercentage: totalDuration ? round1((this._tally.snoringDuration / totalDuration) * 100) : 0,
-      bruxismPercentage: totalDuration ? round1((this._tally.bruxismDuration / totalDuration) * 100) : 0,
+      snoringDuration: round1(t.snoringDuration),
+      bruxismDuration: round1(t.bruxismDuration),
+      noiseDuration: round1(t.noiseDuration),
+      snoringEpisodes: t.snoringEpisodes,
+      bruxismEpisodes: t.bruxismEpisodes,
+      noiseEpisodes: t.noiseEpisodes,
+      snoringPercentage: pct(t.snoringDuration),
+      bruxismPercentage: pct(t.bruxismDuration),
+      loudestDb: t.loudestDb === -Infinity ? null : round1(t.loudestDb),
     };
 
     let clips = [];
+    let highlights = [];
     if (this.storage && this.session) {
-      await this.storage.updateSession(this.session.id, summaryPatch).catch((e) =>
-        console.warn('[AudioEngine] updateSession failed:', e)
-      );
+      await this.storage
+        .updateSession(this.session.id, summaryPatch)
+        .catch((e) => console.warn('[AudioEngine] updateSession failed:', e));
       clips = await this.storage.getClipsBySession(this.session.id).catch(() => []);
+      highlights = await this.storage.getHighlightsBySession(this.session.id).catch(() => []);
     }
 
     this._setStatus('idle');
-
     const summary = {
       sessionId: this.session ? this.session.id : null,
       startTime,
       ...summaryPatch,
       clips,
+      highlights,
     };
     this.session = null;
     return summary;
@@ -215,22 +286,31 @@ export class AudioEngine {
   _onWorkletMessage(e) {
     const msg = e.data;
     if (!msg) return;
+    if (msg.type === 'energy') {
+      this.onEnergy(msg.rms);
+      return;
+    }
+    this._lastAudioAt = Date.now();
+
     switch (msg.type) {
-      case 'energy':
-        this.onEnergy(msg.rms);
-        break;
       case 'silence':
-        this._handleClassification({ type: 'silence', confidence: 0 }, msg.timestamp);
+        this._considerHighlight(msg, { type: 'silence', confidence: 0 });
+        this._handleClassification({ type: 'silence', confidence: 0 }, msg);
         break;
       case 'spectrogram': {
         let result;
         try {
-          result = this.classifier.classify(msg.data, { rms: msg.rms });
+          result = this.classifier.classify(msg.data, {
+            rms: msg.rms,
+            peak: msg.peak,
+            zcr: msg.zcr,
+          });
         } catch (err) {
           console.warn('[AudioEngine] classify failed:', err);
           result = { type: 'other', confidence: 0 };
         }
-        this._handleClassification(result, msg.timestamp);
+        this._considerHighlight(msg, result);
+        this._handleClassification(result, msg);
         break;
       }
       case 'audio-clip':
@@ -241,50 +321,57 @@ export class AudioEngine {
     }
   }
 
-  // debounce / event lifecycle. `ctxTime` is worklet currentTime in seconds.
-  _handleClassification(result, ctxTime) {
-    const wall = this._ctxToWall(ctxTime);
-    const isPositive =
-      POSITIVE_TYPES.has(result.type) && result.confidence >= (this.classifier?.minConfidence ?? 0.35);
+  // Decide the effective label for a window: classifier verdict, or a generic
+  // "noise" when it is simply loud, or negative.
+  _effectiveType(result, msg) {
+    const min = this.classifier?.minConfidence ?? 0.35;
+    if ((result.type === 'snoring' || result.type === 'bruxism') && result.confidence >= min) {
+      return { type: result.type, confidence: result.confidence };
+    }
+    if ((msg.rms || 0) >= Math.max(LOUD_NOISE_RMS, this.noiseGate * 4)) {
+      return { type: 'noise', confidence: clamp01((msg.rms - LOUD_NOISE_RMS) * 6 + 0.4) };
+    }
+    return null;
+  }
 
-    if (isPositive) {
-      const type = result.type;
-      if (this._pending && this._pending.type === type && wall - this._pending.lastWall <= CONFIRM_WINDOW_MS) {
+  _handleClassification(result, msg) {
+    const ctxTime = typeof msg.timestamp === 'number' ? msg.timestamp : this._wallToCtx(Date.now());
+    const wall = this._ctxToWall(ctxTime);
+    const positive = this._effectiveType(result, msg);
+
+    if (positive) {
+      const { type, confidence } = positive;
+      if (
+        this._pending &&
+        this._pending.type === type &&
+        wall - this._pending.lastWall <= CONFIRM_WINDOW_MS
+      ) {
         this._pending.count += 1;
         this._pending.lastWall = wall;
         this._pending.lastCtx = ctxTime;
-        this._pending.confidences.push(result.confidence);
+        this._pending.confidences.push(confidence);
         this._negativeStreak = 0;
       } else {
-        // different type, or gap too large — close the old one, open a new one
         this._finalizePending();
         this._pending = {
           type,
           count: 1,
-          startWall: wall - WINDOW_SEC * 1000, // window covers the preceding 2s
+          startWall: wall - WINDOW_SEC * 1000,
           startCtx: ctxTime - WINDOW_SEC,
           lastWall: wall,
           lastCtx: ctxTime,
-          confidences: [result.confidence],
+          confidences: [confidence],
           emitted: false,
           eventId: null,
         };
         this._negativeStreak = 0;
       }
 
-      if (this._pending.count >= CONFIRM_COUNT && !this._pending.emitted) {
-        this._confirmPending();
-      } else if (this._pending.emitted) {
-        this._growPending();
-      }
-    } else {
-      // negative (silence / other)
-      if (this._pending) {
-        this._negativeStreak += 1;
-        if (this._negativeStreak >= END_NEGATIVE_STREAK) {
-          this._finalizePending();
-        }
-      }
+      if (this._pending.count >= CONFIRM_COUNT && !this._pending.emitted) this._confirmPending();
+      else if (this._pending.emitted) this._growPending();
+    } else if (this._pending) {
+      this._negativeStreak += 1;
+      if (this._negativeStreak >= END_NEGATIVE_STREAK) this._finalizePending();
     }
   }
 
@@ -295,8 +382,7 @@ export class AudioEngine {
     const confidence = avg(p.confidences);
     const severity = Classifier.severityFor(confidence);
     const duration = Math.max(WINDOW_SEC, (p.lastWall - p.startWall) / 1000);
-
-    const eventRecord = {
+    const rec = {
       id: p.eventId,
       sessionId: this.session ? this.session.id : null,
       type: p.type,
@@ -308,11 +394,8 @@ export class AudioEngine {
       timestamp: Math.round(p.startWall),
       hasClip: false,
     };
-
-    if (this.storage) this.storage.addEvent(eventRecord).catch((e) => console.warn('[AudioEngine] addEvent:', e));
-
-    if (p.type === 'snoring') this._tally.snoringEpisodes += 1;
-    else this._tally.bruxismEpisodes += 1;
+    if (this.storage) this.storage.addEvent(rec).catch((e) => console.warn('[AudioEngine] addEvent:', e));
+    this._tally[p.type + 'Episodes'] += 1;
 
     this.onEvent({
       type: p.type,
@@ -339,68 +422,235 @@ export class AudioEngine {
       .catch(() => {});
   }
 
-  async _finalizePending() {
+  _finalizePending() {
     const p = this._pending;
     this._pending = null;
     this._negativeStreak = 0;
     if (!p || !p.emitted) return;
 
     const durationSec = Math.max(WINDOW_SEC, (p.lastWall - p.startWall) / 1000);
-    if (p.type === 'snoring') this._tally.snoringDuration += durationSec;
-    else this._tally.bruxismDuration += durationSec;
+    this._tally[p.type + 'Duration'] += durationSec;
 
-    // request the surrounding audio from the worklet's rolling buffer
     if (this.workletNode) {
-      const startCtx = p.startCtx - CLIP_PAD_SEC;
-      const endCtx = p.lastCtx + CLIP_PAD_SEC;
-      this._clipQueue.push({ eventId: p.eventId, sessionId: this.session ? this.session.id : null });
+      this._clipQueue.push({
+        kind: 'event',
+        id: p.eventId,
+        sessionId: this.session ? this.session.id : null,
+      });
       this.workletNode.port.postMessage({
         command: 'extract-clip',
-        startTime: startCtx,
-        endTime: endCtx,
+        startTime: p.startCtx - CLIP_PAD_SEC,
+        endTime: p.lastCtx + CLIP_PAD_SEC,
       });
     }
   }
 
+  // ---- loudest-moment highlights ----------------------------------
+  _considerHighlight(msg, result) {
+    const peak = msg.peak ?? msg.rms ?? 0;
+    const rms = msg.rms ?? 0;
+    if (rms < HIGHLIGHT_MIN_RMS) return;
+
+    const ctxTime = typeof msg.timestamp === 'number' ? msg.timestamp : this._wallToCtx(Date.now());
+    const wall = this._ctxToWall(ctxTime);
+    const db = 20 * Math.log10(Math.max(peak, 1e-6));
+    if (db > this._tally.loudestDb) this._tally.loudestDb = db;
+
+    const classifiedAs =
+      result.type === 'snoring' || result.type === 'bruxism' ? result.type : 'noise';
+
+    // collapse with a nearby existing highlight (same loud bout)
+    const near = this._highlights.find((h) => Math.abs(h.wall - wall) < HIGHLIGHT_MIN_GAP_MS);
+    if (near) {
+      if (peak > near.peak) {
+        near.peak = peak;
+        near.rms = rms;
+        near.db = db;
+        near.wall = wall;
+        near.ctxTime = ctxTime;
+        near.classifiedAs = classifiedAs;
+        near.confidence = result.confidence || 0;
+        this._requestHighlightClip(near);
+        this._persistHighlight(near);
+      }
+      return;
+    }
+
+    const full = this._highlights.length >= MAX_HIGHLIGHTS;
+    const quietest = full ? this._highlights[this._highlights.length - 1] : null;
+    if (full && peak <= quietest.peak) return;
+
+    const h = {
+      id: cryptoId(),
+      sessionId: this.session ? this.session.id : null,
+      wall,
+      ctxTime,
+      peak,
+      rms,
+      db,
+      classifiedAs,
+      confidence: result.confidence || 0,
+      hasClip: false,
+    };
+    this._highlights.push(h);
+    this._highlights.sort((a, b) => b.peak - a.peak);
+
+    if (this._highlights.length > MAX_HIGHLIGHTS) {
+      const evicted = this._highlights.pop();
+      if (this.storage) this.storage.deleteHighlight(evicted.id).catch(() => {});
+    }
+    this._requestHighlightClip(h);
+    this._persistHighlight(h);
+  }
+
+  _persistHighlight(h) {
+    if (!this.storage) return;
+    this.storage
+      .saveHighlight({
+        id: h.id,
+        sessionId: h.sessionId,
+        timestamp: Math.round(h.wall),
+        peak: round3(h.peak),
+        db: round1(h.db),
+        rms: round3(h.rms),
+        classifiedAs: h.classifiedAs,
+        confidence: round3(h.confidence),
+        hasClip: h.hasClip,
+      })
+      .catch((e) => console.warn('[AudioEngine] saveHighlight:', e));
+  }
+
+  _requestHighlightClip(h) {
+    if (!this.workletNode) return;
+    this._clipQueue.push({ kind: 'highlight', id: h.id, sessionId: h.sessionId });
+    this.workletNode.port.postMessage({
+      command: 'extract-clip',
+      startTime: h.ctxTime - WINDOW_SEC - HIGHLIGHT_PAD_SEC,
+      endTime: h.ctxTime + HIGHLIGHT_PAD_SEC,
+    });
+  }
+
   async _handleClip(msg) {
     const pending = this._clipQueue.shift();
-    if (!pending || !msg.buffer || msg.buffer.length === 0) return;
+    if (!pending || !msg.buffer || msg.buffer.length === 0 || !this.storage) return;
     const sampleRate = this.audioContext ? this.audioContext.sampleRate : TARGET_SAMPLE_RATE;
     const blob = float32ToWav(msg.buffer, sampleRate);
     const duration = msg.buffer.length / sampleRate;
-    if (!this.storage) return;
     try {
       await this.storage.saveClip({
-        eventId: pending.eventId,
+        eventId: pending.id,
         sessionId: pending.sessionId,
+        clipType: pending.kind,
         audioBlob: blob,
         duration: round1(duration),
         format: 'wav',
         timestamp: Date.now(),
       });
-      await this.storage.updateEvent(pending.eventId, { hasClip: true }).catch(() => {});
+      if (pending.kind === 'event') {
+        await this.storage.updateEvent(pending.id, { hasClip: true }).catch(() => {});
+      } else {
+        await this.storage.updateHighlight(pending.id, { hasClip: true }).catch(() => {});
+        const h = this._highlights.find((x) => x.id === pending.id);
+        if (h) h.hasClip = true;
+      }
     } catch (e) {
       console.warn('[AudioEngine] saveClip failed:', e);
     }
   }
 
-  // ---- helpers -----------------------------------------------------
+  // ---- background resilience -------------------------------------
+  _startKeepAlive() {
+    try {
+      const ctx = this.audioContext;
+      const buf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate); // 1s of silence
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.loop = true;
+      const g = ctx.createGain();
+      g.gain.value = 0;
+      src.connect(g).connect(ctx.destination);
+      src.start();
+      this.keepAlive = { src, g };
+    } catch (_) {
+      /* non-fatal */
+    }
+  }
+
+  _handleCtxStateChange() {
+    const st = this.audioContext && this.audioContext.state;
+    if (!this._recording) return;
+    if (st === 'suspended' || st === 'interrupted') {
+      if (!this._suspendedSince) this._suspendedSince = Date.now();
+      this._setStatus('interrupted', 'Audio paused by the operating system — keep the app open.');
+      this.audioContext.resume().catch(() => {});
+    } else if (st === 'running' && this._suspendedSince) {
+      const gapSec = round1((Date.now() - this._suspendedSince) / 1000);
+      this._suspendedSince = 0;
+      this._lastAudioAt = Date.now();
+      this._setStatus('recording', null, { recoveredGapSec: gapSec });
+    }
+  }
+
+  _handleVisibility() {
+    if (!this._recording) return;
+    if (document.visibilityState === 'visible') {
+      if (this.audioContext && this.audioContext.state !== 'running') {
+        this.audioContext.resume().catch(() => {});
+      }
+      this.wakeLock.acquire().catch(() => {});
+    }
+  }
+
+  _startWatchdog() {
+    this._stopWatchdog();
+    this._watchdog = setInterval(() => {
+      if (!this._recording) return;
+      const idle = Date.now() - this._lastAudioAt;
+      if (idle > STALL_TIMEOUT_MS) {
+        this._setStatus('stalled', `No audio for ${Math.round(idle / 1000)}s — attempting recovery.`);
+        if (this.audioContext && this.audioContext.state !== 'running') {
+          this.audioContext.resume().catch(() => {});
+        }
+        if (document.visibilityState === 'visible') this.wakeLock.acquire().catch(() => {});
+      }
+    }, 3000);
+  }
+
+  _stopWatchdog() {
+    if (this._watchdog) clearInterval(this._watchdog);
+    this._watchdog = null;
+  }
+
+  // ---- helpers ---------------------------------------------------
   _ctxToWall(ctxTime) {
     if (typeof ctxTime !== 'number') return Date.now();
     return this.startWallTime + (ctxTime - this.ctxStartTime) * 1000;
   }
+  _wallToCtx(wall) {
+    return this.ctxStartTime + (wall - this.startWallTime) / 1000;
+  }
 
-  _setStatus(status, error) {
+  _setStatus(status, message, extra) {
     this.status = status;
     try {
-      this.onStatusChange(status, error);
+      this.onStatusChange(status, message || (extra ? extra : undefined), extra);
     } catch (e) {
       console.warn('[AudioEngine] onStatusChange threw:', e);
     }
   }
 
-  async _teardownAudio() {
+  async _teardown() {
+    this._stopWatchdog();
     try {
+      if (this.keepAlive) {
+        try {
+          this.keepAlive.src.stop();
+        } catch (_) {
+          /* already stopped */
+        }
+        this.keepAlive.src.disconnect();
+        this.keepAlive.g.disconnect();
+      }
       if (this.workletNode) {
         this.workletNode.port.onmessage = null;
         this.workletNode.disconnect();
@@ -408,10 +658,14 @@ export class AudioEngine {
       if (this.sourceNode) this.sourceNode.disconnect();
       if (this.sinkNode) this.sinkNode.disconnect();
       if (this.mediaStream) this.mediaStream.getTracks().forEach((t) => t.stop());
-      if (this.audioContext && this.audioContext.state !== 'closed') await this.audioContext.close();
+      if (this.audioContext) {
+        this.audioContext.removeEventListener('statechange', this._onCtxStateChange);
+        if (this.audioContext.state !== 'closed') await this.audioContext.close();
+      }
     } catch (e) {
       console.warn('[AudioEngine] teardown warning:', e);
     }
+    this.keepAlive = null;
     this.workletNode = null;
     this.sourceNode = null;
     this.sinkNode = null;
@@ -421,35 +675,83 @@ export class AudioEngine {
 }
 
 // ---------------------------------------------------------------------------
+// microphone acquisition
+// ---------------------------------------------------------------------------
+async function openMicrophone() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    const e = new Error('This browser cannot access the microphone.');
+    e.name = 'NotSupportedError';
+    throw e;
+  }
+  // `ideal` (not exact) so an unsupported rate never triggers OverconstrainedError
+  const preferred = {
+    audio: {
+      channelCount: { ideal: 1 },
+      sampleRate: { ideal: TARGET_SAMPLE_RATE },
+      echoCancellation: { ideal: false },
+      noiseSuppression: { ideal: false },
+      autoGainControl: { ideal: false },
+    },
+  };
+  try {
+    return await navigator.mediaDevices.getUserMedia(preferred);
+  } catch (err) {
+    if (err && (err.name === 'OverconstrainedError' || err.name === 'NotReadableError' || err.name === 'TypeError')) {
+      // fall back to the most permissive request
+      return await navigator.mediaDevices.getUserMedia({ audio: true });
+    }
+    throw err;
+  }
+}
+
+function describeMicError(err) {
+  const name = (err && err.name) || 'Error';
+  const map = {
+    NotAllowedError:
+      'Microphone access is blocked for this site. Open your browser’s site settings ' +
+      '(the lock/AA icon by the address bar) → Microphone → Allow, then reload. ' +
+      'On iPhone also check Settings → Safari → Microphone, or Settings → the app.',
+    SecurityError: 'Microphone needs a secure (https) connection.',
+    NotFoundError: 'No microphone was found on this device.',
+    NotReadableError:
+      'The microphone is in use by another app. Close other apps using the mic and try again.',
+    AbortError: 'The microphone request was interrupted. Try again.',
+    NotSupportedError: 'This browser cannot access the microphone.',
+  };
+  return {
+    name,
+    message: map[name] || `Microphone error: ${(err && err.message) || name}`,
+    raw: err && err.message,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // WAV encoding — 16-bit PCM mono
 // ---------------------------------------------------------------------------
 export function float32ToWav(samples, sampleRate = 16000) {
   const numSamples = samples.length;
   const bytesPerSample = 2;
-  const blockAlign = bytesPerSample; // mono
+  const blockAlign = bytesPerSample;
   const byteRate = sampleRate * blockAlign;
   const dataSize = numSamples * bytesPerSample;
   const buffer = new ArrayBuffer(44 + dataSize);
   const view = new DataView(buffer);
-
   const writeStr = (offset, str) => {
     for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
   };
-
   writeStr(0, 'RIFF');
   view.setUint32(4, 36 + dataSize, true);
   writeStr(8, 'WAVE');
   writeStr(12, 'fmt ');
-  view.setUint32(16, 16, true); // PCM chunk size
-  view.setUint16(20, 1, true); // audio format = PCM
-  view.setUint16(22, 1, true); // channels = 1
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
   view.setUint32(24, sampleRate, true);
   view.setUint32(28, byteRate, true);
   view.setUint16(32, blockAlign, true);
-  view.setUint16(34, 8 * bytesPerSample, true); // bits per sample
+  view.setUint16(34, 8 * bytesPerSample, true);
   writeStr(36, 'data');
   view.setUint32(40, dataSize, true);
-
   let offset = 44;
   for (let i = 0; i < numSamples; i++) {
     let s = samples[i];
@@ -463,6 +765,17 @@ export function float32ToWav(samples, sampleRate = 16000) {
 // ---------------------------------------------------------------------------
 // small helpers
 // ---------------------------------------------------------------------------
+function freshTally() {
+  return {
+    snoringEpisodes: 0,
+    bruxismEpisodes: 0,
+    noiseEpisodes: 0,
+    snoringDuration: 0,
+    bruxismDuration: 0,
+    noiseDuration: 0,
+    loudestDb: -Infinity,
+  };
+}
 function clamp01(x) {
   return x < 0 ? 0 : x > 1 ? 1 : x;
 }
@@ -489,7 +802,7 @@ function cryptoId() {
 /**
  * Map a 0–1 sensitivity slider to a noise-gate RMS threshold.
  * Higher sensitivity => lower gate => quieter sounds get classified.
- * 0.0 -> ~0.05, 0.5 -> ~0.01, 1.0 -> ~0.001
+ * 0.0 -> ~0.05, 0.5 -> ~0.013, 1.0 -> ~0.001
  */
 export function sensitivityToThreshold(v) {
   const s = clamp01(v);

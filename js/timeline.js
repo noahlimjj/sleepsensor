@@ -1,6 +1,6 @@
 /* ============================================================
-   SleepSensor — Canvas Sleep Timeline (Retro B&W)
-   Pixel-art style horizontal bar
+   SleepSensor — Canvas Sleep Timeline (Modern)
+   Sleek, rounded horizontal bar timeline
    ============================================================ */
 
 import { formatTime } from './utils.js';
@@ -18,8 +18,8 @@ export class Timeline {
 
   _resize() {
     const rect = this.canvas.parentElement.getBoundingClientRect();
-    this.width = rect.width - 24;
-    this.height = 60;
+    this.width = rect.width - 32; // padding
+    this.height = 70;
     this.canvas.width = this.width * this.dpr;
     this.canvas.height = this.height * this.dpr;
     this.canvas.style.width = `${this.width}px`;
@@ -31,66 +31,71 @@ export class Timeline {
     const ctx = this.ctx;
     const w = this.width;
     const h = this.height;
-    const barY = 18;
-    const barH = 20;
+    const barY = 24;
+    const barH = 16;
+    const radius = barH / 2;
     const totalMs = session.endTime - session.startTime;
 
     ctx.clearRect(0, 0, w, h);
-    ctx.imageSmoothingEnabled = false;
+    ctx.imageSmoothingEnabled = true;
 
     if (!totalMs || totalMs <= 0) return;
 
-    // Background bar (quiet) — dark fill with border
-    ctx.fillStyle = '#2a2a2a';
-    ctx.fillRect(0, barY, w, barH);
-    ctx.strokeStyle = '#444';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(0, barY, w, barH);
+    // Background bar (quiet) — soft dark pill
+    ctx.fillStyle = '#222222';
+    ctx.beginPath();
+    ctx.roundRect(0, barY, w, barH, radius);
+    ctx.fill();
 
-    // Event segments — solid blocks, no rounding
+    // Event segments
     const colors = {
-      snoring: '#e8e8e8',
-      bruxism: '#888',
+      snoring: '#ffffff',
+      bruxism: '#888888',
     };
 
     for (const event of events) {
-      const x = Math.floor(((event.startTime - session.startTime) / totalMs) * w);
-      const eventW = Math.max(2, Math.floor(((event.endTime - event.startTime) / totalMs) * w));
-      ctx.fillStyle = colors[event.type] || '#ccc';
-      ctx.fillRect(x, barY, eventW, barH);
+      const x = Math.max(0, Math.min(w, ((event.startTime - session.startTime) / totalMs) * w));
+      let eventW = Math.max(4, ((event.endTime - event.startTime) / totalMs) * w);
+      if (x + eventW > w) eventW = w - x;
+
+      ctx.fillStyle = colors[event.type] || '#cccccc';
+      ctx.beginPath();
+      // Draw sub-pills for each event to keep it round
+      ctx.roundRect(x, barY, eventW, barH, Math.min(radius, eventW / 2));
+      ctx.fill();
     }
 
-    // Time labels — pixel font style
-    ctx.fillStyle = '#777';
-    ctx.font = '10px "Press Start 2P", monospace';
+    // Time labels — smooth modern font
+    ctx.fillStyle = '#888888';
+    ctx.font = '500 11px "Inter", sans-serif';
     ctx.textBaseline = 'bottom';
     ctx.textAlign = 'left';
-    ctx.fillText(formatTime(session.startTime), 0, barY - 3);
+    ctx.fillText(formatTime(session.startTime), 4, barY - 6);
     ctx.textAlign = 'right';
-    ctx.fillText(formatTime(session.endTime), w, barY - 3);
+    ctx.fillText(formatTime(session.endTime), w - 4, barY - 6);
 
-    // Hour markers — dashed lines
+    // Hour markers
     const startHour = new Date(session.startTime);
     startHour.setMinutes(0, 0, 0);
     let marker = startHour.getTime() + 3600000;
 
-    ctx.strokeStyle = '#444';
+    ctx.strokeStyle = '#333333';
     ctx.lineWidth = 1;
 
     while (marker < session.endTime) {
-      const x = Math.floor(((marker - session.startTime) / totalMs) * w);
-      if (x > 20 && x < w - 20) {
-        // Dotted line (pixel style — alternating pixels)
-        for (let py = barY; py < barY + barH; py += 3) {
-          ctx.fillStyle = '#555';
-          ctx.fillRect(x, py, 1, 1);
-        }
+      const x = ((marker - session.startTime) / totalMs) * w;
+      if (x > 30 && x < w - 30) {
+        // Vertical tick
+        ctx.beginPath();
+        ctx.moveTo(x, barY + barH + 4);
+        ctx.lineTo(x, barY + barH + 8);
+        ctx.stroke();
 
         // Hour label
-        ctx.fillStyle = '#555';
-        ctx.font = '8px "Press Start 2P", monospace';
+        ctx.fillStyle = '#666666';
+        ctx.font = '400 10px "Inter", sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText(formatTime(marker), x, barY + barH + 12);
+        ctx.fillText(formatTime(marker), x, barY + barH + 20);
       }
       marker += 3600000;
     }

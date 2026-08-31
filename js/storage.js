@@ -7,7 +7,7 @@
  */
 
 const DB_NAME = 'sleepsensor-db';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 export class Storage {
   constructor() {
@@ -53,6 +53,12 @@ export class Storage {
     }
     if (!db.objectStoreNames.contains('settings')) {
       db.createObjectStore('settings', { keyPath: 'key' });
+    }
+    // v2: loudest-moment highlights (top-N loudest clips of the night)
+    if (!db.objectStoreNames.contains('highlights')) {
+      const s = db.createObjectStore('highlights', { keyPath: 'id' });
+      s.createIndex('sessionId', 'sessionId', { unique: false });
+      s.createIndex('timestamp', 'timestamp', { unique: false });
     }
   }
 
@@ -151,14 +157,16 @@ export class Storage {
   }
 
   async deleteSession(id) {
-    // cascade: remove the session, its events and its clips
+    // cascade: remove the session, its events, highlights and clips
     const events = await this.getEventsBySession(id);
-    const tx = this._tx(['sessions', 'events', 'clips'], 'readwrite');
+    const highlights = await this.getHighlightsBySession(id);
+    const tx = this._tx(['sessions', 'events', 'highlights', 'clips'], 'readwrite');
     tx.objectStore('sessions').delete(id);
     const clipIdx = tx.objectStore('clips').index('sessionId');
     const clipKeys = await this._req(clipIdx.getAllKeys(id));
     clipKeys.forEach((k) => tx.objectStore('clips').delete(k));
     events.forEach((ev) => tx.objectStore('events').delete(ev.id));
+    highlights.forEach((h) => tx.objectStore('highlights').delete(h.id));
     await this._done(tx);
   }
 
@@ -212,8 +220,9 @@ export class Storage {
   async saveClip(clip) {
     const rec = {
       id: clip.id || uuid(),
-      eventId: clip.eventId,
+      eventId: clip.eventId, // parent id: an event OR a highlight
       sessionId: clip.sessionId,
+      clipType: clip.clipType || 'event', // 'event' | 'highlight'
       audioBlob: clip.audioBlob,
       duration: clip.duration ?? 0,
       format: clip.format || 'wav',
@@ -236,9 +245,62 @@ export class Storage {
     return rows;
   }
 
+  /** Clips for a session filtered by kind ('event' | 'highlight'). */
+  async getClipsBySessionType(sessionId, clipType) {
+    const rows = await this.getClipsBySession(sessionId);
+    return rows.filter((c) => (c.clipType || 'event') === clipType);
+  }
+
   async getClipByEvent(eventId) {
     const rows = await this._getAllByIndex('clips', 'eventId', eventId);
     return rows[0] || null;
+  }
+
+  // ---- highlights (loudest moments of the night) ------------------
+  async saveHighlight(h) {
+    const rec = {
+      id: h.id || uuid(),
+      sessionId: h.sessionId,
+      timestamp: h.timestamp || Date.now(),
+      peak: h.peak ?? 0,
+      db: h.db ?? null,
+      rms: h.rms ?? 0,
+      classifiedAs: h.classifiedAs || 'noise',
+      confidence: h.confidence ?? 0,
+      hasClip: !!h.hasClip,
+    };
+    const tx = this._tx('highlights', 'readwrite');
+    tx.objectStore('highlights').put(rec);
+    await this._done(tx);
+    return rec;
+  }
+
+  async updateHighlight(id, updates) {
+    const tx = this._tx('highlights', 'readwrite');
+    const store = tx.objectStore('highlights');
+    const existing = await this._req(store.get(id));
+    if (!existing) {
+      await this._done(tx).catch(() => {});
+      return null;
+    }
+    const merged = { ...existing, ...updates, id };
+    store.put(merged);
+    await this._done(tx);
+    return merged;
+  }
+
+  async getHighlightsBySession(sessionId) {
+    const rows = await this._getAllByIndex('highlights', 'sessionId', sessionId);
+    rows.sort((a, b) => b.peak - a.peak); // loudest first
+    return rows;
+  }
+
+  async deleteHighlight(id) {
+    const clip = await this.getClipByEvent(id);
+    const tx = this._tx(['highlights', 'clips'], 'readwrite');
+    tx.objectStore('highlights').delete(id);
+    if (clip) tx.objectStore('clips').delete(clip.id);
+    await this._done(tx);
   }
 
   async deleteClipsBySession(sessionId) {
@@ -264,11 +326,12 @@ export class Storage {
 
   // ---- maintenance ----------------------------------------------
   async getStorageUsage() {
-    const tx = this._tx(['sessions', 'events', 'clips'], 'readonly');
-    const [sessions, events, clips] = await Promise.all([
+    const tx = this._tx(['sessions', 'events', 'clips', 'highlights'], 'readonly');
+    const [sessions, events, clips, highlights] = await Promise.all([
       this._req(tx.objectStore('sessions').count()),
       this._req(tx.objectStore('events').count()),
       this._req(tx.objectStore('clips').count()),
+      this._req(tx.objectStore('highlights').count()),
     ]);
     let totalBytes = 0;
     if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.estimate) {
@@ -283,7 +346,7 @@ export class Storage {
       const clipRows = await this._req(this._tx('clips', 'readonly').objectStore('clips').getAll());
       totalBytes = clipRows.reduce((sum, c) => sum + (c.audioBlob?.size || 0), 0);
     }
-    return { sessions, events, clips, totalBytes };
+    return { sessions, events, clips, highlights, totalBytes };
   }
 
   async pruneOldSessions(keepDays = 30) {
@@ -295,17 +358,19 @@ export class Storage {
   }
 
   async exportSession(sessionId) {
-    const [session, events, clips] = await Promise.all([
+    const [session, events, highlights, clips] = await Promise.all([
       this.getSession(sessionId),
       this.getEventsBySession(sessionId),
+      this.getHighlightsBySession(sessionId),
       this.getClipsBySession(sessionId),
     ]);
-    return { session, events, clips };
+    return { session, events, highlights, clips };
   }
 
   async clearAll() {
-    const tx = this._tx(['sessions', 'events', 'clips', 'settings'], 'readwrite');
-    ['sessions', 'events', 'clips', 'settings'].forEach((s) => tx.objectStore(s).clear());
+    const stores = ['sessions', 'events', 'clips', 'highlights', 'settings'];
+    const tx = this._tx(stores, 'readwrite');
+    stores.forEach((s) => tx.objectStore(s).clear());
     await this._done(tx);
   }
 }
