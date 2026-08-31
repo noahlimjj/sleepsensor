@@ -43,6 +43,10 @@ async function main() {
     try {
       let p = decodeURIComponent(req.url.split('?')[0]);
       if (p === '/') p = '/index.html';
+      if (p === '/js/firebase-config.js') {
+        res.writeHead(200, { 'content-type': 'text/javascript' });
+        return res.end('export const FIREBASE_CONFIG={};export const FIREBASE_SDK_VERSION="10.13.0";export const AUTH_METHODS={guest:true};export function firebaseConfigured(){return false;}');
+      }
       const fpath = join(ROOT, p);
       if (!fpath.startsWith(ROOT)) {
         res.writeHead(403).end('no');

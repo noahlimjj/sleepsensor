@@ -12,8 +12,40 @@ does now — 100 % on-device, no accounts. Once configured you get:
 
 What the client code already does: `js/firebase.js` (SDK loader),
 `js/auth.js` (`AuthManager`), `js/sync.js` (`SyncManager`), the auth screen in
-`index.html`, and the Account section in Settings. You only need to create the
-Firebase project and paste the config.
+`index.html`, and the Account section in Settings.
+
+---
+
+## STATUS — project `sleep-38ea4` (done for you)
+
+Already set up and committed:
+
+- ✅ Firebase project `sleep-38ea4` + web app `sleepsensor-web` created
+- ✅ Real config written into `js/firebase-config.js` (committed — these are not
+  secrets)
+- ✅ Firestore `(default)` database created (region `nam5`)
+- ✅ Security rules (`firestore.rules`) deployed to `cloud.firestore`
+- ✅ `AUTH_METHODS`: guest + email + google enabled, apple off
+
+### ⚠️ You still have to do this by hand (Console UI — I can't script it)
+
+1. **Enable sign-in providers.**
+   [Console → Authentication](https://console.firebase.google.com/u/0/project/sleep-38ea4/authentication/providers)
+   → **Get started**, then **Sign-in method** tab → enable:
+   - **Anonymous** — toggle on, Save
+   - **Email/Password** — toggle on (leave "Email link" off), Save
+   - **Google** — toggle on, pick your email as the support email, Save
+2. **Authorized domains.**
+   [Console → Authentication → Settings → Authorized domains](https://console.firebase.google.com/u/0/project/sleep-38ea4/authentication/settings)
+   → **Add domain** → `sleepsensor.vercel.app`. (`localhost` and
+   `sleep-38ea4.firebaseapp.com` are already there.)
+
+Until step 1 is done, the auth screen appears but every sign-in button fails
+with `auth/operation-not-allowed` / `auth/configuration-not-found`.
+
+There is also a stray empty project `sleepsensor-app` (created by mistake before
+you shared `sleep-38ea4`). Harmless — delete it at
+Console → Project settings → General → Delete project if you want.
 
 ---
 

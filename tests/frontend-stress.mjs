@@ -23,6 +23,10 @@ async function main() {
   const server = createServer(async (req, res) => {
     let p = decodeURIComponent(req.url.split('?')[0]);
     if (p === '/') p = '/index.html';
+    if (p === '/js/firebase-config.js') {
+      res.writeHead(200, { 'content-type': 'text/javascript' });
+      return res.end('export const FIREBASE_CONFIG={};export const FIREBASE_SDK_VERSION="10.13.0";export const AUTH_METHODS={guest:true};export function firebaseConfigured(){return false;}');
+    }
     const fp = join(ROOT, p);
     const s = await stat(fp).catch(() => null);
     if (!s || !s.isFile()) { res.writeHead(404).end('nf'); return; }
