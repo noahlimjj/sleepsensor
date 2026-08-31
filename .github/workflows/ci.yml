@@ -16,6 +16,8 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      - name: Install test harness deps
+        run: npm --prefix tests ci
       - name: Unit + integration tests
         run: npm test
       - name: Capacitor / native-app wiring

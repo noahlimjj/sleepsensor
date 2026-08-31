@@ -36,12 +36,12 @@ public class BackgroundRecorder: CAPPlugin {
 
     // MARK: - Permissions
 
-    @objc func checkPermissions(_ call: CAPPluginCall) {
+    @objc override public func checkPermissions(_ call: CAPPluginCall) {
         let state = AVAudioSession.sharedInstance().recordPermission
         call.resolve(["microphone": mapPermission(state)])
     }
 
-    @objc func requestPermissions(_ call: CAPPluginCall) {
+    @objc override public func requestPermissions(_ call: CAPPluginCall) {
         AVAudioSession.sharedInstance().requestRecordPermission { granted in
             call.resolve(["microphone": granted ? "granted" : "denied"])
         }
