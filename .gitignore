@@ -10,3 +10,8 @@ coverage/
 scratch/
 tests/fixtures/*.wav
 .env*
+
+# training artifacts
+training/audio/
+training/features*.json
+training/*.wav

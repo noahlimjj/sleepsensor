@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <meta name="description" content="SleepSensor — AI-powered sleep monitor that detects snoring and teeth grinding, tracks your sleep quality, and replays audio highlights.">
-  <meta name="theme-color" content="#0a0e27">
+  <meta name="description" content="SleepSensor — sleep monitor that detects snoring and teeth grinding, tracks your sleep quality, and replays audio highlights.">
+  <meta name="theme-color" content="#0a0a0a">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="SleepSensor">
@@ -15,10 +15,7 @@
   <link rel="icon" type="image/svg+xml" href="/assets/icons/favicon.svg">
   <link rel="apple-touch-icon" href="/assets/icons/icon-192.png">
 
-  <!-- Fonts -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
+  <!-- Fonts loaded via CSS @import for retro pixel fonts -->
 
   <!-- TensorFlow.js (for classifier) -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js" defer></script>
@@ -34,25 +31,45 @@
   <div id="splash-screen" class="splash-screen">
     <div class="splash-content">
       <div class="splash-icon">
-        <svg viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <circle cx="40" cy="40" r="36" stroke="url(#splash-grad)" stroke-width="3" opacity="0.3"/>
-          <path d="M40 16C30 16 22 24 22 34C22 44 28 50 28 56H52C52 50 58 44 58 34C58 24 50 16 40 16Z" fill="url(#splash-grad)" opacity="0.15"/>
-          <path d="M40 16C30 16 22 24 22 34C22 44 28 50 28 56H52C52 50 58 44 58 34C58 24 50 16 40 16Z" stroke="url(#splash-grad)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-          <path d="M32 56V60C32 64.4183 35.5817 68 40 68C44.4183 68 48 64.4183 48 60V56" stroke="url(#splash-grad)" stroke-width="2.5" stroke-linecap="round"/>
-          <circle cx="40" cy="36" r="4" fill="url(#splash-grad)" opacity="0.6"/>
-          <!-- Sound waves -->
-          <path d="M14 30C14 30 10 34 10 40C10 46 14 50 14 50" stroke="url(#splash-grad)" stroke-width="2" stroke-linecap="round" opacity="0.4"/>
-          <path d="M66 30C66 30 70 34 70 40C70 46 66 50 66 50" stroke="url(#splash-grad)" stroke-width="2" stroke-linecap="round" opacity="0.4"/>
-          <defs>
-            <linearGradient id="splash-grad" x1="10" y1="16" x2="70" y2="68">
-              <stop stop-color="#6C63FF"/>
-              <stop offset="1" stop-color="#4ECDC4"/>
-            </linearGradient>
-          </defs>
+        <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <!-- Pixel art moon -->
+          <rect x="20" y="8" width="4" height="4" fill="#e8e8e8"/>
+          <rect x="24" y="4" width="4" height="4" fill="#e8e8e8"/>
+          <rect x="28" y="4" width="4" height="4" fill="#e8e8e8"/>
+          <rect x="32" y="4" width="4" height="4" fill="#e8e8e8"/>
+          <rect x="36" y="8" width="4" height="4" fill="#e8e8e8"/>
+          <rect x="16" y="12" width="4" height="4" fill="#e8e8e8"/>
+          <rect x="16" y="16" width="4" height="4" fill="#e8e8e8"/>
+          <rect x="16" y="20" width="4" height="4" fill="#e8e8e8"/>
+          <rect x="16" y="24" width="4" height="4" fill="#e8e8e8"/>
+          <rect x="20" y="28" width="4" height="4" fill="#e8e8e8"/>
+          <rect x="24" y="32" width="4" height="4" fill="#e8e8e8"/>
+          <rect x="28" y="32" width="4" height="4" fill="#e8e8e8"/>
+          <rect x="32" y="32" width="4" height="4" fill="#e8e8e8"/>
+          <rect x="36" y="28" width="4" height="4" fill="#e8e8e8"/>
+          <rect x="40" y="12" width="4" height="4" fill="#e8e8e8"/>
+          <rect x="40" y="16" width="4" height="4" fill="#e8e8e8"/>
+          <rect x="40" y="20" width="4" height="4" fill="#e8e8e8"/>
+          <rect x="40" y="24" width="4" height="4" fill="#e8e8e8"/>
+          <!-- ZZZ -->
+          <rect x="44" y="12" width="12" height="2" fill="#666"/>
+          <rect x="52" y="14" width="4" height="2" fill="#666"/>
+          <rect x="48" y="16" width="4" height="2" fill="#666"/>
+          <rect x="44" y="18" width="4" height="2" fill="#666"/>
+          <rect x="44" y="20" width="12" height="2" fill="#666"/>
+          <!-- Sound bars -->
+          <rect x="8" y="42" width="4" height="8" fill="#444"/>
+          <rect x="14" y="38" width="4" height="16" fill="#666"/>
+          <rect x="20" y="40" width="4" height="12" fill="#444"/>
+          <rect x="26" y="36" width="4" height="20" fill="#888"/>
+          <rect x="32" y="40" width="4" height="12" fill="#444"/>
+          <rect x="38" y="38" width="4" height="16" fill="#666"/>
+          <rect x="44" y="42" width="4" height="8" fill="#444"/>
+          <rect x="50" y="40" width="4" height="12" fill="#666"/>
         </svg>
       </div>
       <h1 class="splash-title">SleepSensor</h1>
-      <p class="splash-subtitle">Initializing audio engine...</p>
+      <p class="splash-subtitle">LOADING...</p>
       <div class="splash-loader">
         <div class="splash-loader-bar"></div>
       </div>

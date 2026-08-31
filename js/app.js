@@ -233,39 +233,39 @@ class App {
       const h = canvas.height / dpr;
       const data = this.waveformData;
       const barCount = data.length;
-      const barWidth = w / barCount;
-      const centerY = h / 2;
+      const barWidth = Math.floor(w / barCount);
+      const centerY = Math.floor(h / 2);
 
       ctx.clearRect(0, 0, w, h);
+      ctx.imageSmoothingEnabled = false;
 
-      // Center line
-      ctx.strokeStyle = 'rgba(108, 99, 255, 0.1)';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(0, centerY);
-      ctx.lineTo(w, centerY);
-      ctx.stroke();
+      // Center line — dotted pixel style
+      ctx.fillStyle = '#2a2a2a';
+      for (let x = 0; x < w; x += 6) {
+        ctx.fillRect(x, centerY, 3, 1);
+      }
 
-      // Bars
-      const gradient = ctx.createLinearGradient(0, 0, w, 0);
-      gradient.addColorStop(0, 'rgba(108, 99, 255, 0.3)');
-      gradient.addColorStop(0.5, 'rgba(108, 99, 255, 0.7)');
-      gradient.addColorStop(1, 'rgba(78, 205, 196, 0.9)');
-
+      // Bars — sharp white rectangles, pixel perfect
       for (let i = 0; i < barCount; i++) {
-        const amplitude = Math.min(data[i] * 8, 1); // scale up for visibility
-        const barH = Math.max(1, amplitude * (h * 0.4));
+        const amplitude = Math.min(data[i] * 8, 1);
+        const barH = Math.max(1, Math.floor(amplitude * (h * 0.38)));
 
-        ctx.fillStyle = gradient;
-        ctx.beginPath();
-        ctx.roundRect(
-          i * barWidth + 1,
+        // Main bar — white
+        ctx.fillStyle = '#e8e8e8';
+        ctx.fillRect(
+          Math.floor(i * barWidth) + 1,
           centerY - barH,
           Math.max(1, barWidth - 2),
-          barH * 2,
-          2
+          barH * 2
         );
-        ctx.fill();
+
+        // Scanline effect on tall bars
+        if (barH > 4) {
+          ctx.fillStyle = '#0a0a0a';
+          for (let y = centerY - barH; y < centerY + barH; y += 3) {
+            ctx.fillRect(Math.floor(i * barWidth) + 1, y, Math.max(1, barWidth - 2), 1);
+          }
+        }
       }
 
       this.waveformAnimId = requestAnimationFrame(draw);
