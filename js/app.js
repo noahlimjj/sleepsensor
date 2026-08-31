@@ -65,7 +65,8 @@ class App {
         const recovered = await new SessionRecovery(this.storage).recoverStale();
         if (recovered.length) {
           this._banner(
-            `Last night's recording ended early — we saved what was captured (${recovered.length} session${recovered.length > 1 ? 's' : ''}).`
+            `Last night's recording ended early — we saved what was captured (${recovered.length} session${recovered.length > 1 ? 's' : ''}).`,
+            { autoHideMs: 12000 }
           );
         }
       } catch (e) {
@@ -105,7 +106,10 @@ class App {
 
     } catch (err) {
       console.error('App init failed:', err);
-      document.querySelector('.splash-subtitle').textContent = 'Failed to initialize. Please refresh.';
+      const sub = document.querySelector('.splash-subtitle');
+      if (sub) sub.textContent = 'Failed to initialize. Please refresh.';
+      const app = document.getElementById('app');
+      if (app && app.hasAttribute('hidden')) app.removeAttribute('hidden');
     }
   }
 
@@ -142,12 +146,17 @@ class App {
     }
   }
 
-  _banner(text) {
+  _banner(text, { autoHideMs = 0 } = {}) {
     const banner = document.getElementById('status-banner');
     const t = document.getElementById('status-banner-text');
     if (!banner || !t) return;
     t.textContent = text;
     banner.removeAttribute('hidden');
+    banner.setAttribute('role', 'status');
+    banner.title = 'Tap to dismiss';
+    banner.onclick = () => banner.setAttribute('hidden', '');
+    clearTimeout(this._bannerTimeout);
+    if (autoHideMs) this._bannerTimeout = setTimeout(() => banner.setAttribute('hidden', ''), autoHideMs);
   }
 
   _hideSplash() {
@@ -186,6 +195,9 @@ class App {
       // Update UI
       document.getElementById('app').classList.add('recording');
       document.getElementById('record-btn-label').textContent = 'Tap to stop monitoring';
+      const recBtn = document.getElementById('record-btn');
+      recBtn.setAttribute('aria-label', 'Stop monitoring');
+      recBtn.setAttribute('aria-pressed', 'true');
       document.querySelector('.record-btn-icon--mic').setAttribute('hidden', '');
       document.querySelector('.record-btn-icon--stop').removeAttribute('hidden');
       document.getElementById('waveform-overlay').classList.add('hidden');
@@ -228,6 +240,9 @@ class App {
       // Update UI
       document.getElementById('app').classList.remove('recording');
       document.getElementById('record-btn-label').textContent = 'Tap to start monitoring';
+      const recBtn = document.getElementById('record-btn');
+      recBtn.setAttribute('aria-label', 'Start monitoring');
+      recBtn.setAttribute('aria-pressed', 'false');
       document.querySelector('.record-btn-icon--mic').removeAttribute('hidden');
       document.querySelector('.record-btn-icon--stop').setAttribute('hidden', '');
       document.getElementById('waveform-overlay').classList.remove('hidden');
@@ -246,7 +261,7 @@ class App {
             : summary.stopReason === 'storage-full'
             ? 'Recording stopped — device storage is full. Everything captured was saved.'
             : `Recording stopped (${summary.stopReason}).`;
-        this._banner(why);
+        this._banner(why, { autoHideMs: 15000 });
       }
 
       // show the report screen first (so canvases have a size), then fill it
@@ -274,13 +289,17 @@ class App {
 
     const resize = () => {
       const rect = canvas.parentElement.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
       canvas.width = rect.width * dpr;
       canvas.height = rect.height * dpr;
       canvas.style.width = `${rect.width}px`;
       canvas.style.height = `${rect.height}px`;
+      ctx.setTransform(1, 0, 0, 1, 0, 0); // reset — scale() is not idempotent
       ctx.scale(dpr, dpr);
     };
     resize();
+    this._waveformResize = resize;
+    window.addEventListener('resize', resize);
 
     const draw = () => {
       const w = canvas.width / dpr;
@@ -332,6 +351,10 @@ class App {
       cancelAnimationFrame(this.waveformAnimId);
       this.waveformAnimId = null;
     }
+    if (this._waveformResize) {
+      window.removeEventListener('resize', this._waveformResize);
+      this._waveformResize = null;
+    }
     this.waveformData.fill(0);
   }
 
@@ -377,54 +400,51 @@ class App {
     }
 
     // Set style
-    toast.className = `event-toast toast--${event.type}`;
+    toast.className = `event-toast toast--${event.type || 'noise'}`;
     toast.removeAttribute('hidden');
 
     // Animate in
-    requestAnimationFrame(() => {
-      toast.classList.add('visible');
-    });
+    requestAnimationFrame(() => toast.classList.add('visible'));
 
-    // Hide after 3 seconds
+    // Hide after 3s — clear BOTH timers so a fresh toast is never yanked away
     clearTimeout(this._toastTimeout);
+    clearTimeout(this._toastHideTimeout);
     this._toastTimeout = setTimeout(() => {
       toast.classList.remove('visible');
-      setTimeout(() => toast.setAttribute('hidden', ''), 300);
+      this._toastHideTimeout = setTimeout(() => {
+        if (!toast.classList.contains('visible')) toast.setAttribute('hidden', '');
+      }, 300);
     }, 3000);
   }
 
   _onStatusChange(status, info, extra) {
     const label = document.getElementById('record-btn-label');
     const banner = document.getElementById('status-banner');
-    const bannerText = document.getElementById('status-banner-text');
+    const hideBanner = () => banner && banner.setAttribute('hidden', '');
 
     if (status === 'error') {
-      label.textContent = 'Microphone unavailable';
-      bannerText.textContent = info || 'Could not access the microphone.';
-      banner.removeAttribute('hidden');
+      if (label) label.textContent = 'Microphone unavailable';
+      this._banner(info || 'Could not access the microphone.');
       this.isRecording = false;
       document.getElementById('app').classList.remove('recording');
       document.querySelector('.record-btn-icon--mic')?.removeAttribute('hidden');
       document.querySelector('.record-btn-icon--stop')?.setAttribute('hidden', '');
+      const recBtn = document.getElementById('record-btn');
+      recBtn?.setAttribute('aria-label', 'Start monitoring');
+      recBtn?.setAttribute('aria-pressed', 'false');
     } else if (status === 'requesting') {
-      label.textContent = 'Requesting microphone access…';
+      if (label) label.textContent = 'Requesting microphone access…';
     } else if (status === 'interrupted') {
-      bannerText.textContent = info || 'Audio interrupted — it will resume automatically.';
-      banner.removeAttribute('hidden');
+      this._banner(info || 'Audio interrupted — it will resume automatically.');
     } else if (status === 'stalled') {
-      bannerText.textContent = info || 'Audio stalled — keep the app open.';
-      banner.removeAttribute('hidden');
+      this._banner(info || 'Audio stalled — keep the app open.', { autoHideMs: 8000 });
     } else if (status === 'recording') {
-      label.textContent = 'Tap to stop monitoring';
+      if (label) label.textContent = 'Tap to stop monitoring';
       const warnings = (extra && extra.warnings) || [];
-      if (warnings.length) {
-        bannerText.textContent = warnings[0];
-        banner.removeAttribute('hidden');
-      } else {
-        banner.setAttribute('hidden', '');
-      }
+      if (warnings.length) this._banner(warnings[0], { autoHideMs: 20000 });
+      else hideBanner();
     } else if (status === 'idle') {
-      banner.setAttribute('hidden', '');
+      hideBanner();
     }
   }
 
@@ -463,6 +483,9 @@ class App {
     document.getElementById('report-bruxism-time').textContent = formatDuration(session.bruxismDuration || 0);
     document.getElementById('report-snoring-pct').textContent = toPercent(session.snoringDuration || 0, totalSleep);
     document.getElementById('report-bruxism-pct').textContent = toPercent(session.bruxismDuration || 0, totalSleep);
+    document.getElementById('report-noise-count').textContent = String(session.noiseEpisodes || 0);
+    document.getElementById('report-loudest').textContent =
+      typeof session.loudestDb === 'number' ? `peak ${Math.round(session.loudestDb)} dB` : '';
 
     // Timeline
     const events = await this.storage.getEventsBySession(sessionId);
@@ -541,15 +564,18 @@ class App {
     }
     const total = events.length || 1;
 
-    container.innerHTML = ['mild', 'moderate', 'severe'].map(sev => `
+    const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+    container.innerHTML = ['mild', 'moderate', 'severe'].map(sev => {
+      const pct = Math.max(0, Math.min(100, (counts[sev] / total) * 100));
+      return `
       <div class="severity-bar-row">
-        <span class="severity-bar-label">${sev}</span>
+        <span class="severity-bar-label">${cap(sev)}</span>
         <div class="severity-bar-track">
-          <div class="severity-bar-fill severity-bar-fill--${sev}" style="width: ${(counts[sev] / total) * 100}%"></div>
+          <div class="severity-bar-fill severity-bar-fill--${sev}" style="width: ${pct}%"></div>
         </div>
         <span class="severity-bar-value">${counts[sev]}</span>
-      </div>
-    `).join('');
+      </div>`;
+    }).join('');
   }
 
   _renderClips(clips, events) {
@@ -774,15 +800,38 @@ class App {
     // Export
     document.getElementById('setting-export-btn').addEventListener('click', async () => {
       if (!this.storage) return;
-      const sessions = await this.storage.getAllSessions();
-      const data = { sessions, exportedAt: new Date().toISOString() };
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `sleepsensor-export-${toDateKey(new Date())}.json`;
-      a.click();
-      URL.revokeObjectURL(url);
+      const btn = document.getElementById('setting-export-btn');
+      btn.disabled = true;
+      try {
+        const sessions = await this.storage.getAllSessions();
+        // include events + highlights per session (clips are large binaries — skip)
+        const full = [];
+        for (const s of sessions) {
+          const [ev, hl] = await Promise.all([
+            this.storage.getEventsBySession(s.id),
+            this.storage.getHighlightsBySession(s.id),
+          ]);
+          full.push({ ...s, events: ev, highlights: hl });
+        }
+        const data = { app: 'SleepSensor', exportedAt: new Date().toISOString(), sessions: full };
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `sleepsensor-export-${toDateKey(new Date())}.json`;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => {
+          a.remove();
+          URL.revokeObjectURL(url);
+        }, 1000);
+      } catch (e) {
+        console.warn('export failed:', e);
+        this._banner('Export failed — try again.');
+      } finally {
+        btn.disabled = false;
+      }
     });
 
     // Clear data
@@ -822,22 +871,29 @@ class App {
 
     const cancelBtn = document.getElementById('confirm-cancel');
     const okBtn = document.getElementById('confirm-ok');
+    let confirmed = false;
 
     const cleanup = () => {
-      dialog.close();
       cancelBtn.removeEventListener('click', onCancel);
       okBtn.removeEventListener('click', onOk);
+      dialog.removeEventListener('close', onClose);
     };
-
-    const onCancel = () => cleanup();
-    const onOk = () => {
+    const onClose = () => {
+      // fires for the OK/Cancel buttons AND for the ESC key
       cleanup();
-      onConfirm();
+      if (confirmed) onConfirm();
+    };
+    const onCancel = () => dialog.close();
+    const onOk = () => {
+      confirmed = true;
+      dialog.close();
     };
 
     cancelBtn.addEventListener('click', onCancel);
     okBtn.addEventListener('click', onOk);
-    dialog.showModal();
+    dialog.addEventListener('close', onClose);
+    if (typeof dialog.showModal === 'function') dialog.showModal();
+    else if (confirm(`${title}\n\n${message}`)) { confirmed = true; onClose(); } // <dialog> unsupported
   }
 }
 

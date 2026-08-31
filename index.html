@@ -108,12 +108,14 @@
         </div>
       </div>
 
-      <!-- Stats row -->
+      <!-- Elapsed -->
+      <div class="live-elapsed">
+        <span class="live-elapsed-value" id="stat-elapsed">00:00:00</span>
+        <span class="live-elapsed-label">Elapsed</span>
+      </div>
+
+      <!-- Event counters -->
       <div class="live-stats" id="live-stats">
-        <div class="live-stat">
-          <span class="live-stat-value" id="stat-elapsed">00:00:00</span>
-          <span class="live-stat-label">Elapsed</span>
-        </div>
         <div class="live-stat live-stat--snoring">
           <span class="live-stat-value" id="stat-snoring-count">0</span>
           <span class="live-stat-label">Snoring</span>
@@ -130,7 +132,7 @@
 
       <!-- Record button -->
       <div class="record-btn-wrapper">
-        <button id="record-btn" class="record-btn" aria-label="Start recording">
+        <button id="record-btn" class="record-btn" aria-label="Start monitoring" aria-pressed="false">
           <div class="record-btn-ring"></div>
           <div class="record-btn-inner">
             <svg class="record-btn-icon record-btn-icon--mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -198,6 +200,12 @@
             <div class="summary-card-label">Grinding</div>
             <div class="summary-card-sub" id="report-bruxism-pct">--</div>
           </div>
+          <div class="summary-card summary-card--noise">
+            <div class="summary-card-icon">🔊</div>
+            <div class="summary-card-value" id="report-noise-count">--</div>
+            <div class="summary-card-label">Other Sounds</div>
+            <div class="summary-card-sub" id="report-loudest">--</div>
+          </div>
         </div>
 
         <!-- Sleep timeline -->
@@ -235,14 +243,14 @@
           </div>
         </section>
 
-        <!-- Highlights / Clips -->
+        <!-- Detected-event clips -->
         <section class="report-section">
-          <h2 class="section-title">Audio Highlights</h2>
+          <h2 class="section-title">Snoring &amp; Grinding Clips</h2>
           <div class="clips-list" id="clips-list">
             <!-- Filled by JS -->
           </div>
           <div id="clips-empty" class="empty-state empty-state--small">
-            <p>No audio clips captured this session</p>
+            <p>No snoring or grinding clips this session</p>
           </div>
         </section>
       </div>
@@ -298,9 +306,9 @@
           <div class="setting-row">
             <div class="setting-info" style="width: 100%;">
               <div style="display:flex; justify-content:space-between; margin-bottom:12px;">
-                <span class="setting-label">Microphone Sensitivity</span>
+                <label class="setting-label" for="setting-sensitivity">Microphone Sensitivity</label>
               </div>
-              <input type="range" id="setting-sensitivity" class="setting-slider--full" min="0" max="100" value="50">
+              <input type="range" id="setting-sensitivity" class="setting-slider--full" min="0" max="100" value="50" aria-label="Microphone sensitivity">
               <div style="display:flex; justify-content:space-between; margin-top:8px;">
                 <span class="setting-desc" style="font-size:0.75rem;">Less sensitive</span>
                 <span class="setting-desc" style="font-size:0.75rem;">More sensitive</span>

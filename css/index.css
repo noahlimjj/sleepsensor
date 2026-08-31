@@ -65,11 +65,22 @@ button {
   background: none;
   cursor: pointer;
   -webkit-appearance: none;
+  appearance: none;
   transition: opacity 200ms ease;
 }
 
 button:active {
   opacity: 0.7;
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--white);
+  outline-offset: 2px;
 }
 
 input[type="range"] {
@@ -185,16 +196,19 @@ a {
 .screen {
   display: none;
   padding: 16px 16px 24px;
-  animation: fadeIn 300ms ease;
 }
 
 @keyframes fadeIn {
-  from { opacity: 0; transform: translateY(5px); }
+  from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
 .screen.active {
   display: block;
+  animation: fadeIn 220ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .screen.active { animation: none; }
 }
 
 .screen-header {
@@ -297,17 +311,39 @@ a {
 }
 
 /* Live stats */
+.live-elapsed {
+  text-align: center;
+  margin: 20px 0 14px;
+}
+.live-elapsed-value {
+  display: block;
+  font-size: 2.25rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 1px;
+}
+.live-elapsed-label {
+  display: block;
+  font-size: 0.7rem;
+  color: var(--mid-light);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-top: 2px;
+  font-weight: 500;
+}
+
 .live-stats {
   display: flex;
   justify-content: space-between;
-  gap: 12px;
-  margin: 24px 0;
+  gap: 10px;
+  margin: 0 0 20px;
 }
 
 .live-stat {
   flex: 1;
+  min-width: 0;
   text-align: center;
-  padding: 16px 8px;
+  padding: 14px 6px;
   background: var(--dark);
   border-radius: var(--radius-md);
   border: var(--border);
@@ -317,6 +353,7 @@ a {
   display: block;
   font-size: 1.5rem;
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
 .live-stat-label {
@@ -360,6 +397,17 @@ a {
   transition: all 300ms ease;
 }
 
+/* expanding pulse — separate from the persistent ring so the outline never
+   disappears mid-cycle */
+.record-btn-ring::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border: 2px solid var(--white);
+  border-radius: var(--radius-full);
+  opacity: 0;
+}
+
 .record-btn-inner {
   width: 90px;
   height: 90px;
@@ -380,17 +428,23 @@ a {
 /* Recording state */
 .app.recording .record-btn-ring {
   border-color: var(--white);
+}
+.app.recording .record-btn-ring::after {
   animation: pulse-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
 .app.recording .record-btn-inner {
-  transform: scale(0.6);
-  border-radius: 20px;
+  transform: scale(0.62);
+  border-radius: 18px;
 }
 
 @keyframes pulse-ring {
-  0% { transform: scale(1); opacity: 0.8; }
-  100% { transform: scale(1.4); opacity: 0; }
+  0% { transform: scale(1); opacity: 0.7; }
+  100% { transform: scale(1.45); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app.recording .record-btn-ring::after { animation: none; }
 }
 
 .record-btn-label {
@@ -456,7 +510,7 @@ a {
 /* ========== SUMMARY CARDS (Report) ========== */
 .summary-cards {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 12px;
   margin-bottom: 24px;
 }
