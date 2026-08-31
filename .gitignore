@@ -23,3 +23,12 @@ training/package-lock.json
 
 # experimental CNN (not shipped unless training/train-cnn.mjs produces a good one)
 # js/model-cnn/
+
+# Capacitor generated platform projects — regenerate with `npm run cap:setup`.
+# The native SOURCE lives in native/ (committed); ios/ and android/ are builds.
+/ios/
+/android/
+package-lock.json
+.gradle/
+*.xcworkspace/xcuserdata/
+DerivedData/

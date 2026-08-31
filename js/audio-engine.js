@@ -183,23 +183,32 @@ export class AudioEngine {
 
   /** Honest, human-readable note about screen-off recording on this device. */
   backgroundGuidance() {
-    const ua = navigator.userAgent || '';
+    // native (Capacitor) app: background recording actually works
+    if (this.native && this.native.supported) {
+      return {
+        canRunScreenOff: true,
+        text:
+          'You can lock the screen — SleepSensor keeps recording in the background. ' +
+          'Keep the phone on a charger for the night.',
+      };
+    }
+    const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : '';
     const iOS = /iP(hone|ad|od)/.test(ua) || (/(Mac)/.test(ua) && navigator.maxTouchPoints > 1);
     if (iOS) {
       return {
         canRunScreenOff: false,
         text:
-          'iPhone/iPad browsers pause audio when the screen locks. Keep SleepSensor ' +
-          'open with the screen on (it will dim) and the phone on a charger. The ' +
-          'screen-wake lock is enabled automatically.',
+          'In a browser, iPhone pauses audio when the screen locks. Keep SleepSensor ' +
+          'open with the screen on (it will dim) and the phone on a charger — or ' +
+          'install the app for true background recording.',
       };
     }
     return {
       canRunScreenOff: false,
       text:
-        'Keep SleepSensor open in the foreground with the phone on a charger. The ' +
-        'screen-wake lock keeps the display dimly on so recording continues. Fully ' +
-        'locking the screen may pause capture until you wake the phone.',
+        'In a browser, keep SleepSensor open in the foreground with the phone on a ' +
+        'charger. Locking the screen may pause capture. Install the app for true ' +
+        'background recording.',
     };
   }
 
@@ -272,7 +281,7 @@ export class AudioEngine {
       this._smoother.reset();
 
       await this.wakeLock.acquire();
-      document.addEventListener('visibilitychange', this._onVisibility);
+      if (typeof document !== 'undefined') document.addEventListener('visibilitychange', this._onVisibility);
       this._startWatchdog();
       this._startCheckpoints();
 
@@ -316,7 +325,7 @@ export class AudioEngine {
 
     this._stopWatchdog();
     this._stopCheckpoints();
-    document.removeEventListener('visibilitychange', this._onVisibility);
+    if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', this._onVisibility);
 
     await this._finalizePending();
     if (this._clipQueue.length) await delay(500); // let outstanding clips arrive
@@ -794,7 +803,7 @@ export class AudioEngine {
 
   _handleVisibility() {
     if (!this._recording) return;
-    if (document.visibilityState === 'visible') {
+    if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
       if (this.audioContext && this.audioContext.state !== 'running') {
         this.audioContext.resume().catch(() => {});
       }
@@ -812,7 +821,7 @@ export class AudioEngine {
         if (this.audioContext && this.audioContext.state !== 'running') {
           this.audioContext.resume().catch(() => {});
         }
-        if (document.visibilityState === 'visible') this.wakeLock.acquire().catch(() => {});
+        if (typeof document === 'undefined' || document.visibilityState === 'visible') this.wakeLock.acquire().catch(() => {});
       }
     }, 3000);
   }

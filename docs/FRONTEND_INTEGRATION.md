@@ -107,3 +107,48 @@ Fair copy: "detects snoring and teeth grinding on-device" / "flags likely
 grinding — review the clips". Every event already carries a confidence the UI
 can show. Bruxism is deliberately conservative (higher confidence bar) so it
 under-reports rather than false-alarms.
+
+## 11. Crash recovery — call on app init (required)
+
+A night can end from a crash / OS kill / dead battery, leaving the session
+row open. Run this once at startup, **before** creating the AudioEngine:
+
+```js
+import { SessionRecovery } from './js/session-recovery.js';
+const recovery = new SessionRecovery(storage);
+const recovered = await recovery.recoverStale();
+// recovered: [{ sessionId, startTime, endTime, recovered:true }]
+if (recovered.length) {
+  // toast: "Last night's recording ended early — we saved what we captured."
+  // those sessions now appear in history/report with `recovered: true`
+}
+```
+
+The engine checkpoints the open session every 60 s, so recovery loses at most
+a minute. `session.recovered === true` on a report → show a small "ended
+unexpectedly" note.
+
+## 12. Native background recording (Capacitor)
+
+When the app runs as the installed iOS/Android build (`docs/CAPACITOR.md`),
+recording continues with the screen locked — no UI change needed, but:
+
+- `onStatusChange('recording', null, extra)` — `extra.native` is `true` in the
+  app, `false` on the web. `extra.warnings[]` may contain actionable strings
+  (battery optimisation on, battery low & unplugged) — show them as a dismissible
+  banner on the record screen.
+- `onStatusChange('interrupted', msg)` — a call/alarm/other app grabbed the mic.
+  Show `msg` briefly; the engine auto-resumes and fires `recording` again.
+- `engine.backgroundGuidance()` → `{ canRunScreenOff, text }`. On the native
+  build `canRunScreenOff` is `true` and the text says "you can lock the screen".
+  On the web it tells them to keep it open / install the app. Show it on the
+  record screen before/at the start of a session.
+- `summary.stopReason` is `'user' | 'max-duration' | 'storage-full'` — if not
+  `'user'`, tell them why it stopped.
+- Optional: an "Install the app for all-night recording" prompt on the web when
+  `!extra.native` and the platform is mobile.
+
+## 13. New session fields
+
+`recovered` (bool), `lastCheckpoint` (ms), `noiseDuration`, `noiseEpisodes` are
+now on session rows. `summary` also has `stopReason`.

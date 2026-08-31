@@ -1,5 +1,11 @@
 tests
 docs
+training
+native
+scripts
+ios
+android
 BACKEND_AGENT_PROMPT.md
+capacitor.config.json
 node_modules
 .git

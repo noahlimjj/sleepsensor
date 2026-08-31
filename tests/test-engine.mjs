@@ -33,6 +33,7 @@ function makeEngine() {
   engine.audioContext = { sampleRate: 16000 };
   engine.workletNode = {
     port: { postMessage: (m) => m.command === 'extract-clip' && calls.clipReq.push(m) },
+    disconnect: () => {},
   };
   return { engine, calls };
 }
@@ -210,6 +211,56 @@ export async function run() {
     const blob = float32ToWav(new Float32Array(16000), 16000);
     eq(blob.type, 'audio/wav', 'wav blob mime type');
     eq(blob.size, 44 + 32000, 'wav blob size');
+  }
+
+  // --- checkpointing persists running tallies to the session ---
+  {
+    const { engine, calls } = makeEngine();
+    calls.sessionUpdates = [];
+    engine.storage.updateSession = async (id, u) => {
+      calls.sessionUpdates.push(u);
+      return { id, ...u };
+    };
+    engine.startWallTime = Date.now();
+    engine._tally.snoringEpisodes = 3;
+    engine._tally.snoringDuration = 90;
+    engine._checkpoint();
+    const cp = calls.sessionUpdates.at(-1);
+    ok(cp && typeof cp.lastCheckpoint === 'number', 'checkpoint writes lastCheckpoint');
+    eq(cp.snoringEpisodes, 3, 'checkpoint persists running episode counts');
+    eq(cp.snoringDuration, 90, 'checkpoint persists running durations');
+  }
+
+  // --- safety auto-stop after MAX_SESSION_MS ---
+  {
+    const { engine, calls } = makeEngine();
+    let stoppedWith = null;
+    engine.stop = async (r) => { stoppedWith = r; engine._recording = false; };
+    engine.startWallTime = Date.now() - 15 * 60 * 60 * 1000; // 15h ago
+    engine._checkpoint();
+    eq(stoppedWith, 'max-duration', 'a 15h session auto-stops with reason "max-duration"');
+  }
+
+  // --- interruption: pause then auto-resume ---
+  {
+    const { engine, calls } = makeEngine();
+    const statuses = [];
+    engine.onStatusChange = (s) => statuses.push(s);
+    engine.audioContext = { state: 'suspended', resume: async () => {} };
+    engine._onInterruption(true);
+    ok(statuses.includes('interrupted'), 'interruption -> "interrupted" status');
+    engine._onInterruption(false);
+    ok(statuses.at(-1) === 'recording', 'interruption end -> back to "recording"');
+    eq(engine._interrupted, false, 'interrupted flag cleared');
+  }
+
+  // --- stop(reason) tags the summary ---
+  {
+    const { engine } = makeEngine();
+    engine.startWallTime = Date.now() - 5000;
+    engine._recording = true;
+    const summary = await engine.stop('storage-full');
+    eq(summary.stopReason, 'storage-full', 'stop(reason) is recorded on the summary');
   }
 
   pass('audio-engine behaves correctly');

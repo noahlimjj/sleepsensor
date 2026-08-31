@@ -11,7 +11,19 @@
     "train:data": "node training/extract-features.mjs --aug 2",
     "train": "node training/train.mjs",
     "train:cnn": "node --max-old-space-size=4096 training/train-cnn.mjs --aug 2",
-    "build": "node -e \"console.log('static site — nothing to build')\""
+    "build": "node -e \"console.log('static site — nothing to build')\"",
+    "cap:setup": "bash scripts/setup-capacitor.sh",
+    "cap:sync": "npx cap sync",
+    "cap:ios": "npx cap open ios",
+    "cap:android": "npx cap open android"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "@capacitor/android": "^6.1.2",
+    "@capacitor/app": "^6.0.1",
+    "@capacitor/cli": "^6.1.2",
+    "@capacitor/core": "^6.1.2",
+    "@capacitor/device": "^6.0.1",
+    "@capacitor/ios": "^6.1.2"
+  }
 }
