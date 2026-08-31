@@ -9,3 +9,4 @@ npm-debug.log*
 coverage/
 scratch/
 tests/fixtures/*.wav
+.env*
