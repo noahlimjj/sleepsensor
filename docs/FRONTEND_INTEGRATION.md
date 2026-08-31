@@ -91,3 +91,12 @@ classifier — keep them in the precache list when you edit sw.js).
 (`Radius value -16 is negative`) on the report/history screen — throws and
 aborts that render. Clamp the radius to `>= 0` (likely `charts.js` or
 `timeline.js` when a value/height goes negative).
+
+## 10. Accuracy (for honest UI copy)
+
+Speaker/recording-independent test: **per-window ~81%, per-episode ~89%**
+(snoring ~97% episode recall, bruxism ~80%). Don't claim "99%" or "clinical".
+Fair copy: "detects snoring and teeth grinding on-device" / "flags likely
+grinding — review the clips". Every event already carries a confidence the UI
+can show. Bruxism is deliberately conservative (higher confidence bar) so it
+under-reports rather than false-alarms.
