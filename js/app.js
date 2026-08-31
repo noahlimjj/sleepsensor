@@ -841,9 +841,13 @@ class App {
         'This will permanently delete all sleep sessions, events, and audio clips. This cannot be undone.',
         async () => {
           await this.storage.clearAll();
+          this.currentSessionId = null;
+          this._stopCurrentClip();
+          document.getElementById('report-empty').removeAttribute('hidden');
+          document.getElementById('report-content').setAttribute('hidden', '');
           this._loadHistory();
-          this._loadLatestReport();
           this._updateStorageUsage();
+          this._banner('All data cleared.', { autoHideMs: 4000 });
         }
       );
     });
