@@ -40,10 +40,13 @@ const WINDOW_SEC = 2; // classification window length
 // noise event (coughing, talking — even softly, a door, a baby, traffic …).
 const LOUD_NOISE_RMS = 0.012; // ~ -38 dBFS, roughly soft speech at bedside
 
-// loudest-moment highlights
+// loudest-moment highlights — capture the loudest sounds of the night by peak
+// amplitude, whatever they are (a shout, a bang, a dog, a snore). A window
+// qualifies on peak OR average level, so brief transients are not missed.
 const MAX_HIGHLIGHTS = 12;
-const HIGHLIGHT_MIN_RMS = 0.012; // ignore genuinely silent nights
-const HIGHLIGHT_MIN_GAP_MS = 25000; // collapse repeats of the same loud bout
+const HIGHLIGHT_MIN_PEAK = 0.05; // ~ -26 dBFS instantaneous — clearly audible
+const HIGHLIGHT_MIN_RMS = 0.012; // ~ -38 dBFS sustained
+const HIGHLIGHT_MIN_GAP_MS = 20000; // collapse repeats of the same loud bout
 const HIGHLIGHT_PAD_SEC = 3;
 
 // background-resilience watchdog
@@ -522,15 +525,27 @@ export class AudioEngine {
   _considerHighlight(msg, result) {
     const peak = msg.peak ?? msg.rms ?? 0;
     const rms = msg.rms ?? 0;
-    if (rms < HIGHLIGHT_MIN_RMS) return;
 
-    const ctxTime = typeof msg.timestamp === 'number' ? msg.timestamp : this._wallToCtx(Date.now());
-    const wall = this._ctxToWall(ctxTime);
+    // always track the single loudest instant of the night, even sub-threshold
     const db = 20 * Math.log10(Math.max(peak, 1e-6));
     if (db > this._tally.loudestDb) this._tally.loudestDb = db;
 
-    const classifiedAs =
-      result.type === 'snoring' || result.type === 'bruxism' ? result.type : 'noise';
+    // qualify on a loud instantaneous peak OR a loud sustained level
+    if (peak < HIGHLIGHT_MIN_PEAK && rms < HIGHLIGHT_MIN_RMS) return;
+
+    const ctxTime = typeof msg.timestamp === 'number' ? msg.timestamp : this._wallToCtx(Date.now());
+    const wall = this._ctxToWall(ctxTime);
+
+    // label it by the classifier's verdict; "unknown" when it isn't sure —
+    // the point is to keep the sound regardless of what it is
+    let classifiedAs = 'unknown';
+    if ((result.type === 'snoring' || result.type === 'bruxism') && (result.confidence || 0) >= 0.4) {
+      classifiedAs = result.type;
+    } else if (result.type === 'noise' && (result.confidence || 0) >= 0.5) {
+      classifiedAs = 'noise';
+    } else if (rms >= LOUD_NOISE_RMS) {
+      classifiedAs = 'noise';
+    }
 
     // collapse with a nearby existing highlight (same loud bout)
     const near = this._highlights.find((h) => Math.abs(h.wall - wall) < HIGHLIGHT_MIN_GAP_MS);

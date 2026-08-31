@@ -265,7 +265,7 @@ export class Storage {
       peak: h.peak ?? 0,
       db: h.db ?? null,
       rms: h.rms ?? 0,
-      classifiedAs: h.classifiedAs || 'noise',
+      classifiedAs: h.classifiedAs || 'unknown', // 'snoring'|'bruxism'|'noise'|'unknown'
       confidence: h.confidence ?? 0,
       hasClip: !!h.hasClip,
     };

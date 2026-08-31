@@ -57,6 +57,13 @@ first) and `summary.loudestDb` is a number. Per highlight:
 { id, sessionId, timestamp, peak, db, rms, classifiedAs, confidence, hasClip }
 ```
 
+`classifiedAs` is `'snoring' | 'bruxism' | 'noise' | 'unknown'` — **`unknown`
+means it was loud enough to keep but the model wasn't sure what it was.** Show
+these too (label them "Unknown sound" or similar). A window qualifies as a
+highlight on a loud instantaneous **peak** (≈ -26 dBFS) OR a loud sustained
+level, so brief bangs/shouts are caught even in an otherwise quiet minute.
+`summary.loudestDb` is always the true loudest instant of the night.
+
 APIs: `storage.getHighlightsBySession(id)`, and the clips:
 `storage.getClipsBySessionType(sessionId, 'highlight')` →
 `{ id, eventId /* = highlight id */, clipType:'highlight', audioBlob, duration }`.

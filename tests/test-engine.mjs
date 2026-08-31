@@ -121,6 +121,30 @@ export async function run() {
     ok(engine._highlights[0].peak === 0.6, 'collapsed highlight keeps the louder peak');
   }
 
+  // --- a loud TRANSIENT (high peak, low average) is still captured, even
+  //     when the classifier has no idea what it is ---
+  {
+    const { engine, calls } = makeEngine();
+    // e.g. a door slam: 0.4 peak, but the 2s window RMS is only ~0.006
+    engine._considerHighlight(
+      { type: 'silence', timestamp: 30, rms: 0.006, peak: 0.4 },
+      { type: 'other', confidence: 0.1 }
+    );
+    eq(engine._highlights.length, 1, 'loud transient captured despite low window RMS');
+    eq(calls.highlights[0].classifiedAs, 'unknown', 'unclassified loud sound is tagged "unknown"');
+    ok(calls.clipReq.length >= 1, 'a clip is pulled for the transient');
+    ok(engine._tally.loudestDb > -12, `loudest dB reflects the peak (${engine._tally.loudestDb.toFixed(1)})`);
+  }
+
+  // --- a genuinely quiet window creates no highlight but still updates loudestDb ---
+  {
+    const { engine, calls } = makeEngine();
+    engine._considerHighlight({ type: 'silence', timestamp: 5, rms: 0.0008, peak: 0.002 }, { type: 'silence', confidence: 0 });
+    eq(engine._highlights.length, 0, 'quiet window is not a highlight');
+    eq(calls.highlights.length, 0, 'nothing persisted for a quiet window');
+    ok(engine._tally.loudestDb < -40, 'loudestDb still tracks the (quiet) peak');
+  }
+
   // --- clip routing: highlight clips flagged, event clips flag the event ---
   {
     const { engine, calls } = makeEngine();
