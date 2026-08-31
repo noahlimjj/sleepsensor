@@ -621,11 +621,17 @@ export class AudioEngine {
   async _handleClip(msg) {
     const pending = this._clipQueue.shift();
     if (!pending || !msg.buffer || msg.buffer.length === 0 || !this.storage) return;
+    // a highlight that was evicted (a louder one arrived) while its clip was in
+    // flight — drop the clip rather than orphan it in storage
+    if (pending.kind === 'highlight' && !this._highlights.some((h) => h.id === pending.id)) return;
     // the worklet resamples to a fixed 16 kHz internally, so clips are 16 kHz
     const blob = float32ToWav(msg.buffer, TARGET_SAMPLE_RATE);
     const duration = msg.buffer.length / TARGET_SAMPLE_RATE;
     try {
       await this.storage.saveClip({
+        // clip id == parent id: re-requesting a clip (e.g. a highlight whose
+        // peak grew) overwrites rather than piling up orphan rows
+        id: pending.id,
         eventId: pending.id,
         sessionId: pending.sessionId,
         clipType: pending.kind,

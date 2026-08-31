@@ -27,6 +27,7 @@ const APP_SHELL = [
   '/js/classifier.js',
   '/js/features.js',
   '/js/model-weights.js',
+  '/js/smoothing.js',
   '/js/storage.js',
   '/js/timeline.js',
   '/js/charts.js',
