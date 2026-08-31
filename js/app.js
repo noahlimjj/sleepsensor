@@ -433,7 +433,8 @@ class App {
   async _loadLatestReport() {
     if (!this.storage) return;
     const sessions = await this.storage.getRecentSessions(1);
-    if (sessions.length > 0) {
+    if (sessions.length > 0 && sessions[0].endTime) {
+      this.currentSessionId = sessions[0].id;
       await this._loadReport(sessions[0].id);
     }
   }
