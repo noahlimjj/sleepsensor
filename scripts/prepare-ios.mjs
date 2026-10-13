@@ -97,8 +97,10 @@ if (existsSync(PBXPROJ)) {
   let content = readFileSync(PBXPROJ, 'utf8');
   // Disable user script sandboxing for CocoaPods scripts (Xcode 15+)
   content = content.replace(/ENABLE_USER_SCRIPT_SANDBOXING = YES;/g, 'ENABLE_USER_SCRIPT_SANDBOXING = NO;');
+  // Ensure deployment target is at least 15.0 for modern Xcode / Xcode Cloud
+  content = content.replace(/IPHONEOS_DEPLOYMENT_TARGET = 13\.0;/g, 'IPHONEOS_DEPLOYMENT_TARGET = 15.0;');
   writeFileSync(PBXPROJ, content, 'utf8');
-  console.log('  ✓ ENABLE_USER_SCRIPT_SANDBOXING → NO in project.pbxproj');
+  console.log('  ✓ ENABLE_USER_SCRIPT_SANDBOXING → NO and IPHONEOS_DEPLOYMENT_TARGET → 15.0 in project.pbxproj');
 }
 
 console.log('\niOS Info.plist and project.pbxproj patched.');

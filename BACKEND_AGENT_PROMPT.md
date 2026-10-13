@@ -3,7 +3,7 @@
 You are building the **backend/engine layer** for SleepSensor, a web-based sleep monitoring app that listens all night and detects snoring and bruxism (teeth grinding) using on-device ML. The frontend agent is handling all UI, design, and visual components separately. Your job is to build the audio pipeline, ML classifier, data persistence, service worker, and device APIs.
 
 **Repo**: https://github.com/noahlimjj/sleepsensor  
-**Working directory**: `/Users/User/sleep_app`  
+**Working directory**: `/Users/User/Projects/Apps/sleep_app`  
 **Deploy target**: Vercel (static site)
 
 ---
