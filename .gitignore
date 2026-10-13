@@ -1,4 +1,13 @@
 node_modules/
+!node_modules/@capacitor/
+!node_modules/@capacitor/ios/
+!node_modules/@capacitor/ios/**
+!node_modules/@capacitor/app/
+!node_modules/@capacitor/app/**
+!node_modules/@capacitor/device/
+!node_modules/@capacitor/device/**
+!node_modules/@capacitor/core/
+!node_modules/@capacitor/core/**
 tests/node_modules/
 .vercel
 .DS_Store
