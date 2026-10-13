@@ -11,12 +11,12 @@
  */
 
 export const FIREBASE_CONFIG = {
-  apiKey: 'AIzaSyDcs1l7s0XhbrRiHH5mKl0biIQctqVfFfc',
-  authDomain: 'sleep-38ea4.firebaseapp.com',
-  projectId: 'sleep-38ea4',
-  storageBucket: 'sleep-38ea4.firebasestorage.app',
-  messagingSenderId: '1064890083266',
-  appId: '1:1064890083266:web:548530faf6787399f6185b',
+  apiKey: '',
+  authDomain: '',
+  projectId: '',
+  storageBucket: '',
+  messagingSenderId: '',
+  appId: '',
 };
 
 // pinned SDK version loaded from Google's CDN (no bundler needed)

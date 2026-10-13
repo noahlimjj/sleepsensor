@@ -16,7 +16,7 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const OUT = join(ROOT, 'www');
 
 // files / dirs that make up the running app
-const INCLUDE = ['index.html', 'manifest.json', 'sw.js', 'js', 'css', 'assets'];
+const INCLUDE = ['index.html', 'privacy.html', 'manifest.json', 'sw.js', 'js', 'css', 'assets'];
 
 async function exists(p) {
   try { await stat(p); return true; } catch { return false; }

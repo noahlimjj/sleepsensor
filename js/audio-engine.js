@@ -870,8 +870,12 @@ export class AudioEngine {
       if (this.sinkNode) this.sinkNode.disconnect();
       if (this.mediaStream) this.mediaStream.getTracks().forEach((t) => t.stop());
       if (this.audioContext) {
-        this.audioContext.removeEventListener('statechange', this._onCtxStateChange);
-        if (this.audioContext.state !== 'closed') await this.audioContext.close();
+        if (typeof this.audioContext.removeEventListener === 'function') {
+          this.audioContext.removeEventListener('statechange', this._onCtxStateChange);
+        }
+        if (this.audioContext.state !== 'closed' && typeof this.audioContext.close === 'function') {
+          await this.audioContext.close();
+        }
       }
     } catch (e) {
       console.warn('[AudioEngine] teardown warning:', e);

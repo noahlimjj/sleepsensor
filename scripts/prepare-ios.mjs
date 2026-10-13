@@ -75,4 +75,20 @@ if (!has('UIApplicationSupportsIndirectInputEvents')) {
   console.log('  ✓ UIApplicationSupportsIndirectInputEvents');
 }
 
+// App Store Export Compliance (no encryption used)
+if (has('ITSAppUsesNonExemptEncryption')) {
+  plist('Set :ITSAppUsesNonExemptEncryption false');
+} else {
+  plist('Add :ITSAppUsesNonExemptEncryption bool false');
+}
+console.log('  ✓ ITSAppUsesNonExemptEncryption → false');
+
+// Replace legacy armv7 with arm64
+try {
+  plist('Delete :UIRequiredDeviceCapabilities');
+} catch {}
+plist('Add :UIRequiredDeviceCapabilities array');
+plist('Add :UIRequiredDeviceCapabilities:0 string arm64');
+console.log('  ✓ UIRequiredDeviceCapabilities → [arm64]');
+
 console.log('\niOS Info.plist patched.');
