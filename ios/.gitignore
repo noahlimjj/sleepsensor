@@ -1,0 +1,5 @@
+App/build
+App/output
+DerivedData
+xcuserdata
+*.xcuserstate

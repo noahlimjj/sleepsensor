@@ -1,0 +1,6 @@
+framework module SleepsensorBackgroundRecorder {
+  umbrella header "SleepsensorBackgroundRecorder-umbrella.h"
+
+  export *
+  module * { export * }
+}

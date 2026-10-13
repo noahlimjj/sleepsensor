@@ -9,7 +9,7 @@
  *     entitlement needed, so this works with free / personal-team signing)
  */
 import { execFileSync } from 'child_process';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -91,4 +91,14 @@ plist('Add :UIRequiredDeviceCapabilities array');
 plist('Add :UIRequiredDeviceCapabilities:0 string arm64');
 console.log('  ✓ UIRequiredDeviceCapabilities → [arm64]');
 
-console.log('\niOS Info.plist patched.');
+// --- project.pbxproj patches -------------------------------------------------
+const PBXPROJ = join(ROOT, 'ios/App/App.xcodeproj/project.pbxproj');
+if (existsSync(PBXPROJ)) {
+  let content = readFileSync(PBXPROJ, 'utf8');
+  // Disable user script sandboxing for CocoaPods scripts (Xcode 15+)
+  content = content.replace(/ENABLE_USER_SCRIPT_SANDBOXING = YES;/g, 'ENABLE_USER_SCRIPT_SANDBOXING = NO;');
+  writeFileSync(PBXPROJ, content, 'utf8');
+  console.log('  ✓ ENABLE_USER_SCRIPT_SANDBOXING → NO in project.pbxproj');
+}
+
+console.log('\niOS Info.plist and project.pbxproj patched.');

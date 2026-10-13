@@ -67,7 +67,7 @@ jobs:
         run: node scripts/build-web.mjs
 
       - name: Add iOS platform
-        run: npx cap add ios
+        run: '[ ! -d "ios" ] && npx cap add ios || echo "iOS platform already initialized"'
 
       - name: Patch Info.plist
         run: node scripts/prepare-ios.mjs
