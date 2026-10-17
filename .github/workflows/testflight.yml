@@ -37,16 +37,16 @@ jobs:
 
       - uses: actions/checkout@v4
 
-      - name: Select Xcode 16 (iOS 18 SDK)
+      - name: Select Xcode 26 (iOS 26 SDK)
         run: |
           echo "Installed Xcode versions:"
           ls -d /Applications/Xcode*.app || true
-          XCODE_16=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -1)
-          if [ -n "$XCODE_16" ]; then
-            echo "Selecting $XCODE_16"
-            sudo xcode-select -s "$XCODE_16/Contents/Developer"
+          XCODE_26=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$XCODE_26" ]; then
+            echo "Selecting $XCODE_26"
+            sudo xcode-select -s "$XCODE_26/Contents/Developer"
           else
-            echo "::warning::Xcode 16 not found, selecting highest available"
+            echo "::warning::Xcode 26 not found, selecting highest available"
             LATEST=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
             sudo xcode-select -s "$LATEST/Contents/Developer"
           fi
