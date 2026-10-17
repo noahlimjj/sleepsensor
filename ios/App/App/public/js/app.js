@@ -5,6 +5,7 @@
 
 import { formatDuration, formatTimer, formatTime, formatDate, formatBytes, toDateKey, getMonthAbbr, getDayOfMonth, throttle, toPercent, roundRectPath } from './utils.js';
 import { Timeline } from './timeline.js';
+import { ApneaDetector } from './apnea-detector.js';
 import { DonutChart, TrendChart } from './charts.js';
 import { SessionRecovery } from './session-recovery.js';
 import { authManager } from './auth.js';
@@ -611,9 +612,14 @@ class App {
     } else if (event.type === 'noise') {
       typeEl.textContent = 'Noise detected';
       iconEl.textContent = '🔊';
+    } else if (event.type === 'apnea') {
+      typeEl.textContent = 'Breathing pause';
+      iconEl.textContent = '🫁';
     }
 
-    if (event.type === 'noise') {
+    if (event.type === 'apnea') {
+      confEl.textContent = `${Math.round(event.duration || 0)}s, then ${event.arousal === 'gasp' ? 'a gasp' : 'a snort'}`;
+    } else if (event.type === 'noise') {
       const d = event.peakDb ?? -30;
       confEl.textContent = d > -6 ? 'Very loud' : d > -18 ? 'Loud' : 'Moderate';
     } else {
@@ -715,8 +721,11 @@ class App {
     }
     this.timeline.render(session, events);
 
-    // Severity breakdown
-    this._renderSeverityBars(events);
+    // Breathing pauses (estimated AHI) and their link to grinding
+    this._renderBreathing(ApneaDetector.calculateAhiMetrics(events, totalSleep));
+
+    // Severity breakdown (snoring / grinding / noise intensity — pauses have their own card)
+    this._renderSeverityBars(events.filter((e) => e.type !== 'apnea'));
 
     // Event audio clips (highlight clips are shown in the Loudest Moments section)
     const clips = await this.storage.getClipsBySessionType(sessionId, 'event');
@@ -726,6 +735,20 @@ class App {
     const highlights = await this.storage.getHighlightsBySession(sessionId);
     const highlightClips = await this.storage.getClipsBySessionType(sessionId, 'highlight');
     this._renderHighlights(highlights, highlightClips);
+  }
+
+  _renderBreathing(m) {
+    document.getElementById('report-ahi').textContent = String(m.estimatedAhi);
+    document.getElementById('report-ahi-sub').textContent =
+      `${m.severityLabel} · ${m.apneaEvents} pause${m.apneaEvents === 1 ? '' : 's'}` +
+      (m.apneaEvents ? ` · longest ${Math.round(m.longestPauseSec)}s` : '');
+    const list = document.getElementById('respiratory-insights');
+    list.innerHTML = '';
+    for (const line of ApneaDetector.describeMetrics(m)) {
+      const li = document.createElement('li');
+      li.textContent = line;
+      list.appendChild(li);
+    }
   }
 
   _renderHighlights(highlights, clips) {
@@ -814,8 +837,8 @@ class App {
     // Map events by ID for lookup
     const eventMap = new Map(events.map(e => [e.id, e]));
 
-    const labels = { snoring: 'Snoring', bruxism: 'Grinding', noise: 'Noise' };
-    const icons = { snoring: '😴', bruxism: '😬', noise: '🔊' };
+    const labels = { snoring: 'Snoring', bruxism: 'Grinding', noise: 'Noise', apnea: 'Breathing pause' };
+    const icons = { snoring: '😴', bruxism: '😬', noise: '🔊', apnea: '🫁' };
 
     container.innerHTML = clips.map(clip => {
       const event = eventMap.get(clip.eventId) || {};
@@ -828,6 +851,8 @@ class App {
       if (type === 'noise') {
         const d = event.peakDb ?? -30;
         meta += ` · ${d > -6 ? 'Very loud' : d > -18 ? 'Loud' : 'Moderate'}`;
+      } else if (type === 'apnea') {
+        meta += ` · ${Math.round(event.duration || 0)}s pause`;
       } else if (typeof event.confidence === 'number') {
         meta += ` · ${Math.round(event.confidence * 100)}% sure`;
       }
@@ -1156,6 +1181,26 @@ class App {
       const eightHoursAgo = now - 8 * 3600 * 1000;
       const sessionId = 'sample-' + Date.now();
 
+      // Breathing pauses in snoring clusters (~6/h → "mild"). The 17600 cluster
+      // ends just before the 18000 grinding episode to show the correlation.
+      const apneaDefs = [];
+      for (const [base, n] of [[4200, 8], [14400, 14], [17600, 7], [21600, 10], [25000, 6]]) {
+        for (let i = 0; i < n; i++) {
+          const dur = 12 + ((apneaDefs.length * 7) % 17);
+          const start = eightHoursAgo + (base + i * 55) * 1000;
+          apneaDefs.push({
+            type: 'apnea',
+            startTime: start,
+            endTime: start + dur * 1000,
+            duration: dur,
+            confidence: 0.7 + ((apneaDefs.length * 3) % 25) / 100,
+            severity: dur < 20 ? 'mild' : dur < 40 ? 'moderate' : 'severe',
+            arousal: i % 3 === 2 ? 'gasp' : 'snort',
+          });
+        }
+      }
+      const ahi = ApneaDetector.calculateAhiMetrics(apneaDefs, 7.5 * 3600);
+
       // Sample session record
       const session = {
         id: sessionId,
@@ -1171,6 +1216,10 @@ class App {
         snoringPercentage: 8.4,
         bruxismPercentage: 2.4,
         loudestDb: -14.2,
+        apneaEvents: ahi.apneaEvents,
+        apneaDuration: ahi.totalPauseSec,
+        estimatedAhi: ahi.estimatedAhi,
+        ahiSeverity: ahi.severity,
       };
       await this.storage.createSession(session);
       await this.storage.updateSession(sessionId, {
@@ -1185,6 +1234,10 @@ class App {
         snoringPercentage: session.snoringPercentage,
         bruxismPercentage: session.bruxismPercentage,
         loudestDb: session.loudestDb,
+        apneaEvents: session.apneaEvents,
+        apneaDuration: session.apneaDuration,
+        estimatedAhi: session.estimatedAhi,
+        ahiSeverity: session.ahiSeverity,
       });
 
       // Synthetic WAV generator helper
@@ -1254,6 +1307,28 @@ class App {
           format: 'wav',
           timestamp: start,
         });
+      }
+
+      // Breathing pauses — the first two get playable clips
+      for (const [i, ev] of apneaDefs.entries()) {
+        const evRec = await this.storage.addEvent({
+          sessionId,
+          ...ev,
+          timestamp: ev.startTime,
+          hasClip: i < 2,
+          peakDb: -18,
+        });
+        if (i < 2) {
+          await this.storage.saveClip({
+            sessionId,
+            eventId: evRec.id,
+            clipType: 'event',
+            audioBlob: makeWavBlob(110, 2.0),
+            duration: 2.0,
+            format: 'wav',
+            timestamp: ev.startTime,
+          });
+        }
       }
 
       // Add highlights (loudest moments)

@@ -248,6 +248,12 @@
             <div class="summary-card-label">Other Sounds</div>
             <div class="summary-card-sub" id="report-loudest">--</div>
           </div>
+          <div class="summary-card summary-card--ahi">
+            <div class="summary-card-icon">🫁</div>
+            <div class="summary-card-value" id="report-ahi">--</div>
+            <div class="summary-card-label">Est. Breathing Pauses / Hour</div>
+            <div class="summary-card-sub" id="report-ahi-sub">--</div>
+          </div>
         </div>
 
         <!-- Sleep timeline -->
@@ -261,7 +267,21 @@
             <span class="legend-item"><span class="legend-dot legend-dot--snoring"></span>Snoring</span>
             <span class="legend-item"><span class="legend-dot legend-dot--bruxism"></span>Grinding</span>
             <span class="legend-item"><span class="legend-dot legend-dot--noise"></span>Noise</span>
+            <span class="legend-item"><span class="legend-dot legend-dot--apnea"></span>Breathing Pause</span>
           </div>
+        </section>
+
+        <!-- Breathing pauses & grinding -->
+        <section class="report-section">
+          <h2 class="section-title">Breathing &amp; Grinding</h2>
+          <ul class="insights-list" id="respiratory-insights">
+            <!-- Filled by JS -->
+          </ul>
+          <p class="insights-disclaimer">
+            Estimated from sound only: SleepSensor listens for snoring that stops for 10+ seconds and
+            ends in a snort or gasp. It is not a medical device and cannot diagnose sleep apnea —
+            only a sleep study can. If you are concerned, talk to a doctor.
+          </p>
         </section>
 
         <!-- Severity breakdown -->

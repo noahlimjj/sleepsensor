@@ -21,6 +21,7 @@
   --bruxism:     #888888;
   --noise:       #555555;
   --quiet:       #222222;
+  --apnea:       #00d2ff;
 
   --font-main:   'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
 
@@ -551,6 +552,40 @@ a {
   margin-top: 2px;
 }
 
+.summary-card--ahi {
+  grid-column: 1 / -1;
+}
+
+.summary-card--ahi .summary-card-value {
+  color: var(--apnea);
+}
+
+/* Breathing & grinding insights */
+.insights-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  margin: 0;
+  list-style: none;
+  background: var(--dark);
+  border: var(--border);
+  border-radius: var(--radius-md);
+}
+
+.insights-list li {
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: var(--light);
+}
+
+.insights-disclaimer {
+  margin-top: 10px;
+  font-size: 0.7rem;
+  line-height: 1.4;
+  color: var(--mid-light);
+}
+
 /* ========== Report Sections ========== */
 .report-section {
   margin-bottom: 32px;
@@ -586,7 +621,8 @@ a {
 
 .timeline-legend {
   display: flex;
-  gap: 16px;
+  flex-wrap: wrap;
+  gap: 8px 16px;
   margin-top: 16px;
   justify-content: center;
 }
@@ -610,6 +646,7 @@ a {
 .legend-dot--snoring { background: var(--snoring); }
 .legend-dot--bruxism { background: var(--bruxism); }
 .legend-dot--noise   { background: var(--noise); }
+.legend-dot--apnea   { background: var(--apnea); }
 
 /* Severity bars */
 .severity-bars {

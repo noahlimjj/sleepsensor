@@ -14,7 +14,7 @@
  *               network-first (falling back to cache) for everything else
  */
 
-const CACHE_NAME = 'sleepsensor-v5';
+const CACHE_NAME = 'sleepsensor-v6';
 
 const APP_SHELL = [
   '/',
@@ -23,6 +23,7 @@ const APP_SHELL = [
   '/css/index.css',
   '/js/app.js',
   '/js/audio-engine.js',
+  '/js/apnea-detector.js',
   '/js/audio-worklet-processor.js',
   '/js/classifier.js',
   '/js/features.js',

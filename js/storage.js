@@ -196,6 +196,8 @@ export class Storage {
       hasClip: !!event.hasClip,
       updatedAt: event.updatedAt || Date.now(),
     };
+    if (typeof event.peakDb === 'number') rec.peakDb = event.peakDb;
+    if (event.arousal) rec.arousal = event.arousal; // apnea: 'snort' | 'gasp' | 'arousal'
     const tx = this._tx('events', 'readwrite');
     tx.objectStore('events').put(rec);
     await this._done(tx);

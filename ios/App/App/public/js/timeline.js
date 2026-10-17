@@ -9,6 +9,7 @@ const COLORS = {
   snoring: '#ffffff',
   bruxism: '#888888',
   noise: '#555555',
+  apnea: '#00d2ff',
 };
 
 export class Timeline {
@@ -66,8 +67,10 @@ export class Timeline {
     ctx.beginPath();
     if (roundRectPath(ctx, 0, barY, w, barH, radius)) ctx.fill();
 
-    // event segments
-    for (const event of events) {
+    // event segments — breathing pauses last so they sit on top of the snoring
+    // run they interrupt
+    const ordered = [...events].sort((a, b) => (a.type === 'apnea') - (b.type === 'apnea'));
+    for (const event of ordered) {
       const x = Math.max(0, Math.min(w, ((event.startTime - session.startTime) / totalMs) * w));
       let eventW = Math.max(3, ((event.endTime - event.startTime) / totalMs) * w);
       if (x + eventW > w) eventW = w - x;

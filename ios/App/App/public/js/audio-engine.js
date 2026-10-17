@@ -8,7 +8,7 @@
  *   const engine = new AudioEngine({
  *     classifier, storage,
  *     onEnergy:       (rms) => {},
- *     onEvent:        (event) => {},   // { type:'snoring'|'bruxism'|'noise', ... }
+ *     onEvent:        (event) => {},   // { type:'snoring'|'bruxism'|'noise'|'apnea', ... }
  *     onStatusChange: (status, info) => {},
  *   });
  *
@@ -21,6 +21,7 @@ import { WakeLock } from './wake-lock.js';
 import { Classifier } from './classifier.js';
 import { HmmSmoother } from './smoothing.js';
 import { nativeBridge } from './native-bridge.js';
+import { ApneaDetector } from './apnea-detector.js';
 
 const SMOOTH_CLASSES = ['quiet', 'snoring', 'bruxism', 'noise'];
 
@@ -55,6 +56,10 @@ const HIGHLIGHT_MIN_RMS = 0.012; // ~ -38 dBFS sustained
 const HIGHLIGHT_MIN_GAP_MS = 20000; // collapse repeats of the same loud bout
 const HIGHLIGHT_PAD_SEC = 3;
 
+// breathing-pause clips: the tail of the pause plus the snort/gasp that ends it
+const APNEA_CLIP_LEAD_SEC = 20;
+const APNEA_CLIP_TAIL_SEC = 2; // detection fires right after the arousal window, so no more audio exists yet
+
 // background-resilience watchdog
 const STALL_TIMEOUT_MS = 9000; // no worklet audio for this long => try to recover
 
@@ -68,6 +73,7 @@ export class AudioEngine {
 
     this.wakeLock = new WakeLock();
     this._smoother = new HmmSmoother({ classes: SMOOTH_CLASSES });
+    this.apneaDetector = new ApneaDetector();
 
     this.status = 'idle';
     this._recording = false;
@@ -279,6 +285,7 @@ export class AudioEngine {
       this._suspendedSince = 0;
       this._interrupted = false;
       this._smoother.reset();
+      this.apneaDetector.reset();
 
       await this.wakeLock.acquire();
       if (typeof document !== 'undefined') document.addEventListener('visibilitychange', this._onVisibility);
@@ -344,6 +351,7 @@ export class AudioEngine {
     const totalDuration = Math.max(0, (endTime - startTime) / 1000);
     const t = this._tally;
     const pct = (d) => (totalDuration ? round1((d / totalDuration) * 100) : 0);
+    const ahi = ApneaDetector.calculateAhiMetrics(this.apneaDetector.events, totalDuration);
 
     const summaryPatch = {
       endTime,
@@ -357,6 +365,10 @@ export class AudioEngine {
       snoringPercentage: pct(t.snoringDuration),
       bruxismPercentage: pct(t.bruxismDuration),
       loudestDb: t.loudestDb === -Infinity ? null : round1(t.loudestDb),
+      apneaEvents: t.apneaEvents,
+      apneaDuration: round1(t.apneaDuration),
+      estimatedAhi: ahi.estimatedAhi,
+      ahiSeverity: ahi.severity,
     };
 
     let clips = [];
@@ -412,6 +424,8 @@ export class AudioEngine {
           bruxismEpisodes: t.bruxismEpisodes,
           noiseEpisodes: t.noiseEpisodes,
           loudestDb: t.loudestDb === -Infinity ? null : round1(t.loudestDb),
+          apneaEvents: t.apneaEvents,
+          apneaDuration: round1(t.apneaDuration),
         })
         .catch((e) => {
           // storage full or unavailable mid-night — stop cleanly, keep what we have
@@ -464,6 +478,7 @@ export class AudioEngine {
         const smoothed = this._smoother.push({ quiet: 1 });
         this._considerHighlight(msg, { type: 'silence', confidence: 0 });
         this._handleClassification(smoothed, msg);
+        this._feedApnea({ type: 'silence', confidence: 1 }, msg);
         break;
       }
       case 'spectrogram': {
@@ -483,6 +498,7 @@ export class AudioEngine {
         this._lastRaw = result;
         this._considerHighlight(msg, result); // highlights use the raw per-window label
         this._handleClassification(smoothed, msg);
+        this._feedApnea(result, msg); // pause timing needs the unsmoothed verdict
         break;
       }
       case 'audio-clip':
@@ -635,6 +651,41 @@ export class AudioEngine {
         endTime: p.lastCtx + CLIP_PAD_SEC,
       });
     }
+  }
+
+  // ---- breathing pauses (acoustic apnea) ----------------------------
+  _feedApnea(result, msg) {
+    const ctxTime = typeof msg.timestamp === 'number' ? msg.timestamp : this._wallToCtx(Date.now());
+    const ev = this.apneaDetector.feed(result, msg, this._ctxToWall(ctxTime));
+    if (!ev) return;
+
+    const eventId = cryptoId();
+    const sessionId = this.session ? this.session.id : null;
+    const rec = { id: eventId, sessionId, ...ev, timestamp: ev.startTime, hasClip: false };
+    if (this.storage) this.storage.addEvent(rec).catch((e) => console.warn('[AudioEngine] addEvent:', e));
+    this._tally.apneaEvents += 1;
+    this._tally.apneaDuration += ev.duration;
+
+    if (this.workletNode) {
+      const onsetCtx = this._wallToCtx(ev.endTime);
+      this._clipQueue.push({ kind: 'event', id: eventId, sessionId });
+      this.workletNode.port.postMessage({
+        command: 'extract-clip',
+        startTime: onsetCtx - Math.min(ev.duration, APNEA_CLIP_LEAD_SEC),
+        endTime: onsetCtx + APNEA_CLIP_TAIL_SEC,
+      });
+    }
+
+    this.onEvent({
+      type: 'apnea',
+      confidence: ev.confidence,
+      severity: ev.severity,
+      peakDb: ev.peakDb,
+      timestamp: ev.startTime,
+      duration: ev.duration,
+      arousal: ev.arousal,
+      eventId,
+    });
   }
 
   // ---- loudest-moment highlights ----------------------------------
@@ -988,6 +1039,8 @@ function freshTally() {
     snoringDuration: 0,
     bruxismDuration: 0,
     noiseDuration: 0,
+    apneaEvents: 0,
+    apneaDuration: 0,
     loudestDb: -Infinity,
   };
 }

@@ -12,6 +12,7 @@ import { run as sync } from './test-sync.mjs';
 import { run as nativeBridge } from './test-native-bridge.mjs';
 import { run as wav } from './test-wav.mjs';
 import { run as engine } from './test-engine.mjs';
+import { run as apnea } from './test-apnea.mjs';
 
 console.log('SleepSensor backend test suite');
 console.log('='.repeat(48));
@@ -29,6 +30,7 @@ try {
   await nativeBridge();
   await wav();
   await engine();
+  await apnea();
 } catch (err) {
   console.error('\nFATAL:', err);
   process.exit(1);
