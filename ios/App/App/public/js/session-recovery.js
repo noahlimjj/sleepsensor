@@ -40,12 +40,14 @@ export class SessionRecovery {
 
       const endTime = lastSeen;
       const totalDuration = Math.max(0, (endTime - s.startTime) / 1000);
+      const sleepHours = totalDuration / 3600;
       const pct = (d) => (totalDuration ? round1(((d || 0) / totalDuration) * 100) : 0);
       const patch = {
         endTime,
         totalDuration,
         snoringPercentage: pct(s.snoringDuration),
         bruxismPercentage: pct(s.bruxismDuration),
+        estimatedAhi: sleepHours > 0 ? round1((s.apneaEvents || 0) / sleepHours) : 0,
         recovered: true,
       };
       try {

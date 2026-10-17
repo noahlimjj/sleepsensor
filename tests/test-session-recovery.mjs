@@ -25,6 +25,7 @@ export async function run() {
     lastCheckpoint: now - 5 * HOUR,
     snoringDuration: 1800,
     bruxismDuration: 120,
+    apneaEvents: 5,
   });
 
   // 3. a session that is still actively recording — checkpoint 10s ago
@@ -41,6 +42,7 @@ export async function run() {
   eq(fixed.recovered, true, 'flagged recovered');
   ok(fixed.totalDuration > 3500 && fixed.totalDuration < 3700, `duration ≈ 1h (${fixed.totalDuration}s)`);
   ok(fixed.snoringPercentage > 0, 'percentages computed from the partial data');
+  eq(fixed.estimatedAhi, 5, 'estimatedAhi computed on recovery');
 
   ok((await storage.getSession(done.id)).endTime === now - HOUR, 'completed session untouched');
   ok((await storage.getSession(live.id)).endTime == null, 'the actively-recording session is left alone');

@@ -47,6 +47,7 @@ ios/**/DerivedData/
 *.xcworkspace/xcuserdata/
 DerivedData/
 tests/fixtures/*.png
+*.mp4
 # NOTE: package-lock.json IS committed — CI needs it for `npm ci`.
 
 # Firebase

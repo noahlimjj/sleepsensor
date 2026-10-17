@@ -113,6 +113,9 @@ export class Storage {
       noiseEpisodes: session.noiseEpisodes || 0,
       snoringPercentage: session.snoringPercentage || 0,
       bruxismPercentage: session.bruxismPercentage || 0,
+      apneaEvents: session.apneaEvents || 0,
+      apneaDuration: session.apneaDuration || 0,
+      estimatedAhi: session.estimatedAhi ?? 0,
       lastCheckpoint: session.startTime || now, // updated ~every 60s while recording
       recovered: false, // set true if finalised by crash recovery
       updatedAt: session.updatedAt || now, // for cloud sync (last-write-wins)
