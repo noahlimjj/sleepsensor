@@ -58,8 +58,6 @@ public class BackgroundRecorder: CAPPlugin {
     // MARK: - Start / stop
 
     @objc func start(_ call: CAPPluginCall) {
-        let title = call.getString("title") ?? "SleepSensor"
-        let text = call.getString("text") ?? "Monitoring your sleep…"
         DispatchQueue.main.async {
             do {
                 let session = AVAudioSession.sharedInstance()
@@ -68,7 +66,6 @@ public class BackgroundRecorder: CAPPlugin {
                                         options: [.mixWithOthers, .allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker])
                 try session.setActive(true, options: [])
                 try self.startSilentLoop()
-                self.setNowPlaying(title: title, text: text)
                 self.running = true
                 call.resolve(["started": true])
             } catch {
@@ -80,7 +77,6 @@ public class BackgroundRecorder: CAPPlugin {
     @objc func stop(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
             self.stopSilentLoop()
-            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
             self.running = false
             call.resolve()
@@ -88,9 +84,7 @@ public class BackgroundRecorder: CAPPlugin {
     }
 
     @objc func update(_ call: CAPPluginCall) {
-        let text = call.getString("text") ?? ""
         DispatchQueue.main.async {
-            self.setNowPlaying(title: "SleepSensor", text: text)
             call.resolve()
         }
     }
@@ -102,12 +96,22 @@ public class BackgroundRecorder: CAPPlugin {
     // MARK: - Silent keep-alive
 
     private func startSilentLoop() throws {
-        let fmt = engine.outputNode.inputFormat(forBus: 0)
+        stopSilentLoop()
+        let outFmt = engine.outputNode.inputFormat(forBus: 0)
+        let fmt: AVAudioFormat
+        if outFmt.sampleRate > 0 && outFmt.channelCount > 0 {
+            fmt = outFmt
+        } else if let fallback = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1) {
+            fmt = fallback
+        } else {
+            return
+        }
+
         let node = AVAudioPlayerNode()
         engine.attach(node)
         engine.connect(node, to: engine.mainMixerNode, format: fmt)
 
-        let frames = AVAudioFrameCount(fmt.sampleRate) // 1 second
+        let frames = max(AVAudioFrameCount(fmt.sampleRate), 44100) // ~1 second
         guard let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: frames) else { return }
         buf.frameLength = frames // zeroed => silence
         self.silentBuffer = buf
@@ -126,17 +130,11 @@ public class BackgroundRecorder: CAPPlugin {
     private func stopSilentLoop() {
         player?.stop()
         if engine.isRunning { engine.stop() }
-        if let node = player { engine.detach(node) }
+        if let node = player {
+            engine.detach(node)
+        }
         player = nil
         silentBuffer = nil
-    }
-
-    private func setNowPlaying(title: String, text: String) {
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = [
-            MPMediaItemPropertyTitle: title,
-            MPMediaItemPropertyArtist: text,
-            MPNowPlayingInfoPropertyIsLiveStream: true
-        ]
     }
 
     // MARK: - Notifications -> JS

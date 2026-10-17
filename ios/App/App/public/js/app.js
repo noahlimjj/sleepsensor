@@ -323,8 +323,6 @@ class App {
     }
   }
 
-  // ========== NAVIGATION ==========
-
   _bindNavigation() {
     const nav = document.getElementById('bottom-nav');
     nav.addEventListener('click', (e) => {
@@ -332,6 +330,11 @@ class App {
       if (!btn) return;
       const screen = btn.dataset.screen;
       if (screen) this._showScreen(screen);
+    });
+
+    // Sample night button on empty report screen
+    document.getElementById('report-load-sample-btn')?.addEventListener('click', () => {
+      this._loadSampleSession();
     });
   }
 
@@ -1015,6 +1018,11 @@ class App {
       this._syncSensitivityLabel();
     });
 
+    // Sample Night loader (reviewer / testing feature)
+    document.getElementById('setting-sample-btn')?.addEventListener('click', () => {
+      this._loadSampleSession();
+    });
+
     // Export
     document.getElementById('setting-export-btn').addEventListener('click', async () => {
       if (!this.storage) return;
@@ -1032,18 +1040,42 @@ class App {
           full.push({ ...s, events: ev, highlights: hl });
         }
         const data = { app: 'SleepSensor', exportedAt: new Date().toISOString(), sessions: full };
-        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `sleepsensor-export-${toDateKey(new Date())}.json`;
-        a.style.display = 'none';
-        document.body.appendChild(a);
-        a.click();
-        setTimeout(() => {
-          a.remove();
-          URL.revokeObjectURL(url);
-        }, 1000);
+        const fileName = `sleepsensor-export-${toDateKey(new Date())}.json`;
+        const jsonStr = JSON.stringify(data, null, 2);
+        const blob = new Blob([jsonStr], { type: 'application/json' });
+
+        // iOS WKWebView does not download blob: URLs via <a> click.
+        // Use Web Share API if supported.
+        let shared = false;
+        if (typeof navigator !== 'undefined' && navigator.canShare) {
+          try {
+            const file = new File([blob], fileName, { type: 'application/json' });
+            if (navigator.canShare({ files: [file] })) {
+              await navigator.share({
+                title: 'SleepSensor Export',
+                files: [file],
+              });
+              shared = true;
+            }
+          } catch (shareErr) {
+            if (shareErr && shareErr.name === 'AbortError') return; // User cancelled share sheet
+            console.warn('Native file share failed, falling back to download:', shareErr);
+          }
+        }
+
+        if (!shared) {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = fileName;
+          a.style.display = 'none';
+          document.body.appendChild(a);
+          a.click();
+          setTimeout(() => {
+            a.remove();
+            URL.revokeObjectURL(url);
+          }, 1500);
+        }
       } catch (e) {
         console.warn('export failed:', e);
         this._banner('Export failed — try again.');
@@ -1111,6 +1143,157 @@ class App {
       desc.textContent = parts.join(' · ');
     } catch {
       document.getElementById('setting-storage-used').textContent = 'Unable to calculate';
+    }
+  }
+
+  // ========== SAMPLE SESSION (REVIEWER / TEST FEATURE) ==========
+
+  async _loadSampleSession() {
+    if (!this.storage) return;
+    try {
+      this._banner('Loading sample sleep session…');
+      const now = Date.now();
+      const eightHoursAgo = now - 8 * 3600 * 1000;
+      const sessionId = 'sample-' + Date.now();
+
+      // Sample session record
+      const session = {
+        id: sessionId,
+        startTime: eightHoursAgo,
+        endTime: now - 30 * 60 * 1000,
+        totalDuration: 7.5 * 3600,
+        snoringDuration: 38 * 60,
+        bruxismDuration: 11 * 60,
+        snoringEpisodes: 16,
+        bruxismEpisodes: 5,
+        noiseDuration: 8 * 60,
+        noiseEpisodes: 7,
+        snoringPercentage: 8.4,
+        bruxismPercentage: 2.4,
+        loudestDb: -14.2,
+      };
+      await this.storage.createSession(session);
+      await this.storage.updateSession(sessionId, {
+        endTime: session.endTime,
+        totalDuration: session.totalDuration,
+        snoringDuration: session.snoringDuration,
+        bruxismDuration: session.bruxismDuration,
+        snoringEpisodes: session.snoringEpisodes,
+        bruxismEpisodes: session.bruxismEpisodes,
+        noiseDuration: session.noiseDuration,
+        noiseEpisodes: session.noiseEpisodes,
+        snoringPercentage: session.snoringPercentage,
+        bruxismPercentage: session.bruxismPercentage,
+        loudestDb: session.loudestDb,
+      });
+
+      // Synthetic WAV generator helper
+      const makeWavBlob = (freq = 180, duration = 1.8) => {
+        const sampleRate = 22050;
+        const numSamples = Math.floor(sampleRate * duration);
+        const buf = new ArrayBuffer(44 + numSamples * 2);
+        const view = new DataView(buf);
+        view.setUint32(0, 0x52494646, false); // "RIFF"
+        view.setUint32(4, 36 + numSamples * 2, true);
+        view.setUint32(8, 0x57415645, false); // "WAVE"
+        view.setUint32(12, 0x666d7420, false); // "fmt "
+        view.setUint32(16, 16, true);
+        view.setUint16(20, 1, true); // PCM
+        view.setUint16(22, 1, true); // mono
+        view.setUint32(24, sampleRate, true);
+        view.setUint32(28, sampleRate * 2, true);
+        view.setUint16(32, 2, true);
+        view.setUint16(34, 16, true);
+        view.setUint32(36, 0x64617461, false); // "data"
+        view.setUint32(40, numSamples * 2, true);
+        for (let i = 0; i < numSamples; i++) {
+          const t = i / sampleRate;
+          const env = Math.sin((Math.PI * i) / numSamples);
+          const sample = Math.sin(2 * Math.PI * freq * t) * 0.25 * env;
+          view.setInt16(44 + i * 2, Math.max(-32768, Math.min(32767, sample * 32767)), true);
+        }
+        return new Blob([buf], { type: 'audio/wav' });
+      };
+
+      // Add events spread across the session
+      const sampleEvents = [
+        { type: 'snoring', offsetSec: 2400, dur: 120, conf: 0.94, sev: 'mild' },
+        { type: 'snoring', offsetSec: 4200, dur: 240, conf: 0.96, sev: 'moderate' },
+        { type: 'bruxism', offsetSec: 7200, dur: 85, conf: 0.88, sev: 'moderate' },
+        { type: 'noise', offsetSec: 10800, dur: 45, conf: 0.75, sev: 'mild', peakDb: -22 },
+        { type: 'snoring', offsetSec: 14400, dur: 360, conf: 0.98, sev: 'severe' },
+        { type: 'bruxism', offsetSec: 18000, dur: 140, conf: 0.91, sev: 'severe' },
+        { type: 'snoring', offsetSec: 21600, dur: 180, conf: 0.92, sev: 'moderate' },
+        { type: 'noise', offsetSec: 24000, dur: 30, conf: 0.80, sev: 'moderate', peakDb: -14 },
+      ];
+
+      for (const ev of sampleEvents) {
+        const start = eightHoursAgo + ev.offsetSec * 1000;
+        const end = start + ev.dur * 1000;
+        const evRec = await this.storage.addEvent({
+          sessionId,
+          type: ev.type,
+          startTime: start,
+          endTime: end,
+          duration: ev.dur,
+          confidence: ev.conf,
+          severity: ev.sev,
+          timestamp: start,
+          hasClip: true,
+          peakDb: ev.peakDb ?? -20,
+        });
+
+        // Add playable audio clip for the event
+        const clipBlob = makeWavBlob(ev.type === 'snoring' ? 140 : ev.type === 'bruxism' ? 520 : 300, 2.0);
+        await this.storage.saveClip({
+          sessionId,
+          eventId: evRec.id,
+          clipType: 'event',
+          audioBlob: clipBlob,
+          duration: 2.0,
+          format: 'wav',
+          timestamp: start,
+        });
+      }
+
+      // Add highlights (loudest moments)
+      const highlightDefs = [
+        { offsetSec: 14420, peak: 0.82, db: -14.2, label: 'snoring' },
+        { offsetSec: 18010, peak: 0.74, db: -16.8, label: 'bruxism' },
+        { offsetSec: 24010, peak: 0.68, db: -18.5, label: 'noise' },
+      ];
+      for (const h of highlightDefs) {
+        const ts = eightHoursAgo + h.offsetSec * 1000;
+        const hlRec = await this.storage.saveHighlight({
+          sessionId,
+          timestamp: ts,
+          peak: h.peak,
+          db: h.db,
+          classifiedAs: h.label,
+          confidence: 0.93,
+          hasClip: true,
+        });
+        const hBlob = makeWavBlob(h.label === 'snoring' ? 130 : 480, 2.0);
+        await this.storage.saveClip({
+          sessionId,
+          eventId: hlRec.id,
+          clipType: 'highlight',
+          audioBlob: hBlob,
+          duration: 2.0,
+          format: 'wav',
+          timestamp: ts,
+        });
+      }
+
+      this.currentSessionId = sessionId;
+      this._showScreen('report');
+      await this._loadReport(sessionId);
+      await this._loadHistory();
+      await this._updateStorageUsage();
+      this._banner('Sample sleep session loaded! Review timeline and playable clips.', { autoHideMs: 5000 });
+    } catch (err) {
+      console.error('Failed to load sample session:', err);
+      this._banner('Could not load sample data.');
     }
   }
 

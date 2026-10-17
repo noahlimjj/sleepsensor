@@ -143,7 +143,7 @@ a {
   position: relative;
   z-index: 1;
   min-height: 100dvh;
-  padding-bottom: var(--nav-height);
+  padding-bottom: calc(var(--nav-height) + env(safe-area-inset-bottom, 0px));
 }
 
 /* ---- Bottom Navigation ---- */
@@ -154,12 +154,12 @@ a {
   right: 0;
   z-index: 100;
   display: flex;
-  height: var(--nav-height);
+  height: calc(var(--nav-height) + env(safe-area-inset-bottom, 0px));
   background: rgba(0, 0, 0, 0.85);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border-top: var(--border);
-  padding-bottom: env(safe-area-inset-bottom, 0);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 .nav-btn {

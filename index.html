@@ -211,6 +211,9 @@
         </svg>
         <h2>No sleep data yet</h2>
         <p>Record a sleep session to see your morning report</p>
+        <button id="report-load-sample-btn" class="setting-btn" style="margin-top:20px; width:auto; padding:10px 20px;">
+          Load Sample Night
+        </button>
       </div>
 
       <!-- Report content -->
@@ -385,6 +388,12 @@
           </div>
         </div>
         <div class="setting-row setting-row--action">
+          <button class="setting-btn" id="setting-sample-btn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+            Load Sample Night
+          </button>
+        </div>
+        <div class="setting-row setting-row--action">
           <button class="setting-btn" id="setting-export-btn">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
             Export All Data
@@ -405,6 +414,18 @@
             <span class="setting-label">SleepSensor v1.0</span>
             <span class="setting-desc" id="about-privacy">Audio is recorded and analysed entirely on your device. Recordings never leave your phone.</span>
           </div>
+        </div>
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Wellness Disclaimer</span>
+            <span class="setting-desc">SleepSensor is a personal wellness and sleep sound logger. It is not a medical device and does not diagnose, treat, cure, or prevent sleep apnea, bruxism, or any medical condition.</span>
+          </div>
+        </div>
+        <div class="setting-row setting-row--action">
+          <a href="privacy.html" class="setting-btn" style="text-decoration:none;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            Privacy Policy
+          </a>
         </div>
       </div>
     </main>
