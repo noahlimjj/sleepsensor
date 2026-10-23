@@ -177,13 +177,15 @@ export async function run() {
     next = { quiet: 0.9, noise: 0.1 };
     rms = 0.001;
     for (let i = 0; i < 3; i++) send();
-    eq(calls.events.length, 0, 'one spurious classification does not survive smoothing');
+    // (the very loud window itself is still logged as a generic sound)
+    eq(calls.events.filter((e) => e.type !== 'noise').length, 0, 'one spurious classification does not survive smoothing');
+    const before = calls.events.length;
 
     next = { snoring: 0.85, noise: 0.15 };
     rms = 0.15;
     for (let i = 0; i < 6; i++) send();
-    eq(calls.events.length, 1, 'a sustained snoring stream produces one event');
-    eq(calls.events[0].type, 'snoring', 'smoothed event type is snoring');
+    eq(calls.events.length - before, 1, 'a sustained snoring stream produces one event');
+    eq(calls.events[calls.events.length - 1].type, 'snoring', 'smoothed event type is snoring');
   }
 
   // --- live dB meter ---
@@ -204,6 +206,54 @@ export async function run() {
     const d = engine.describeSensitivity(0.5);
     ok(d.label && d.detail && typeof d.thresholdDbFS === 'number', 'describeSensitivity returns label/detail/threshold');
     ok(engine.describeSensitivity(0.9).label === 'Maximum', 'high value -> "Maximum"');
+  }
+
+  // --- adaptive floor: in a quiet room a soft sound well under the old fixed
+  //     -38 dBFS bar is still logged; a steady fan at the same level is not ---
+  {
+    const { engine, calls } = makeEngine();
+    let t = 0;
+    for (let i = 0; i < 20; i++) engine._handleClassification(...W('other', 0, (t += 2), 0.0015, 0.003));
+    eq(calls.events.length, 0, 'steady quiet background produces no events');
+    for (let i = 0; i < 3; i++) engine._handleClassification(...W('other', 0, (t += 2), 0.005, 0.01));
+    eq(calls.events.length, 1, 'soft sound ~10 dB above a quiet floor is logged (-46 dBFS)');
+
+    const fan = makeEngine();
+    t = 0;
+    for (let i = 0; i < 60; i++) fan.engine._handleClassification(...W('other', 0, (t += 2), 0.005, 0.01));
+    ok(fan.calls.events.length <= 1, 'a constant fan logs at most once while the floor is learned');
+    eq(fan.engine._pending, null, 'and stops registering once learned');
+    ok(fan.engine.ambientFloor() > 0.004, 'floor converges on the fan level');
+  }
+
+  // --- a brief sound inside an otherwise quiet window (activeRms) ---
+  {
+    const { engine, calls } = makeEngine();
+    let t = 0;
+    for (let i = 0; i < 10; i++) engine._handleClassification(...QUIET((t += 2)));
+    const msg = { type: 'spectrogram', timestamp: (t += 2), rms: 0.003, activeRms: 0.03, peak: 0.06 };
+    engine._handleClassification({ type: 'other', confidence: 0 }, msg);
+    eq(calls.events.length, 1, 'a short cough diluted in a 2 s average still logs on its own');
+  }
+
+  // --- confident raw snore is not swallowed by the HMM at high sensitivity ---
+  {
+    const { engine, calls } = makeEngine();
+    engine.setSensitivity(0.7);
+    const quietSmoothed = { type: 'quiet', confidence: 0.7 };
+    const m = (ts) => ({ type: 'spectrogram', timestamp: ts, rms: 0.004, peak: 0.01 });
+    engine._handleClassification(quietSmoothed, m(2), { type: 'snoring', confidence: 0.75 });
+    engine._handleClassification(quietSmoothed, m(4), { type: 'snoring', confidence: 0.75 });
+    eq(calls.events.length, 1, 'two confident raw snore windows log despite HMM lag');
+    eq(calls.events[0].type, 'snoring', 'logged as snoring');
+  }
+
+  // --- worklet gate uses the loudest short slice ---
+  {
+    const { dsp } = await import('./load-worklet.mjs');
+    const buf = new Float32Array(32000);
+    for (let i = 10000; i < 11600; i++) buf[i] = 0.1 * Math.sin(i / 3);
+    ok(dsp.maxFrameRms(buf) > 0.05 && dsp.rms(buf) < 0.02, 'maxFrameRms sees a 100 ms burst the 2 s RMS hides');
   }
 
   // --- WAV encoding still intact ---
