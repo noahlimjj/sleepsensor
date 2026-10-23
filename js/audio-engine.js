@@ -47,6 +47,17 @@ const WINDOW_SEC = 2; // classification window length
 // noise event (coughing, talking — even softly, a door, a baby, traffic …).
 const LOUD_NOISE_RMS = 0.012; // ~ -38 dBFS, roughly soft speech at bedside
 
+// adaptive ambient floor: a sound counts as "loud" when it stands out from the
+// room's own background by a sensitivity-dependent margin, so a quiet bedroom
+// picks up soft sounds a fixed dBFS bar would miss (phone mics on a nightstand
+// often hear snoring at -45 dBFS or below).
+// The floor drops quickly towards quieter windows and creeps up slowly, so a
+// steady fan or AC is learned within a minute while a cough, a word or a bout
+// of talking barely moves it.
+const FLOOR_RISE_DB = 0.5; // max rise per 2 s window (~15 dB/min)
+const FLOOR_FALL = 0.5; // blend factor towards a quieter window
+const DEFAULT_SENSITIVITY = 0.7;
+
 // loudest-moment highlights — capture the loudest sounds of the night by peak
 // amplitude, whatever they are (a shout, a bang, a dog, a snore). A window
 // qualifies on peak OR average level, so brief transients are not missed.
@@ -89,8 +100,9 @@ export class AudioEngine {
     this.startWallTime = 0;
     this.ctxStartTime = 0;
 
-    this.sensitivity = 0.5;
-    this.noiseGate = sensitivityToThreshold(0.5);
+    this.sensitivity = DEFAULT_SENSITIVITY;
+    this.noiseGate = sensitivityToThreshold(DEFAULT_SENSITIVITY);
+    this._floor = null; // ambient background level (RMS), learned per session
 
     // debounce state
     this._pending = null;
@@ -170,7 +182,7 @@ export class AudioEngine {
     if (this.workletNode) {
       this.workletNode.port.postMessage({ command: 'set-threshold', value: this.noiseGate });
     }
-    if (this.storage) this.storage.setSetting('sensitivity', this.sensitivity).catch(() => {});
+    if (this.storage) this.storage.setSetting('sensitivityV2', this.sensitivity).catch(() => {});
     return this.noiseGate;
   }
 
@@ -286,6 +298,7 @@ export class AudioEngine {
       this._interrupted = false;
       this._smoother.reset();
       this.apneaDetector.reset();
+      this._floor = null;
 
       await this.wakeLock.acquire();
       if (typeof document !== 'undefined') document.addEventListener('visibilitychange', this._onVisibility);
@@ -488,6 +501,8 @@ export class AudioEngine {
             rms: msg.rms,
             peak: msg.peak,
             zcr: msg.zcr,
+            activeRms: msg.activeRms,
+            gate: this.noiseGate,
           });
         } catch (err) {
           console.warn('[AudioEngine] classify failed:', err);
@@ -497,7 +512,7 @@ export class AudioEngine {
         const smoothed = this._smoother.push(result.scores || {});
         this._lastRaw = result;
         this._considerHighlight(msg, result); // highlights use the raw per-window label
-        this._handleClassification(smoothed, msg);
+        this._handleClassification(smoothed, msg, result);
         this._feedApnea(result, msg); // pause timing needs the unsmoothed verdict
         break;
       }
@@ -509,10 +524,46 @@ export class AudioEngine {
     }
   }
 
+  // ---- ambient floor -------------------------------------------------
+  _level(msg) {
+    return Math.max(msg.activeRms ?? 0, msg.rms ?? 0);
+  }
+
+  _trackLevel(msg) {
+    const level = this._level(msg);
+    let f = this._floor ?? this.noiseGate;
+    if (level < f) f = f * (1 - FLOOR_FALL) + level * FLOOR_FALL;
+    else f = Math.min(level, f * Math.pow(10, FLOOR_RISE_DB / 20));
+    // a dropout (digital silence) must not drag the floor to zero
+    this._floor = Math.max(f, this.noiseGate * 0.25);
+  }
+
+  /** Estimated background level (RMS) of the room. */
+  ambientFloor() {
+    return this._floor ?? this.noiseGate;
+  }
+
+  /** RMS a window must reach to count as a sound worth logging. */
+  loudThreshold() {
+    // 10 dB above the floor at minimum sensitivity, 4 dB at maximum
+    const marginDb = 10 - 6 * this.sensitivity;
+    const relative = this.ambientFloor() * Math.pow(10, marginDb / 20);
+    return Math.max(this.noiseGate * 2, relative);
+  }
+
   // Decide the effective label for a window: classifier verdict, or a generic
   // "noise" when it is simply above the ambient floor, or negative.
-  _effectiveType(result, msg) {
+  _effectiveType(result, msg, raw = null) {
     const min = this.classifier?.minConfidence ?? 0.35;
+    // at higher sensitivity a confident single-window snore/grind is not
+    // swallowed by the HMM's lag while it is still catching up
+    if (
+      raw && this.sensitivity >= 0.55 &&
+      (raw.type === 'snoring' || raw.type === 'bruxism') &&
+      raw.type !== result.type && (raw.confidence || 0) >= 0.6
+    ) {
+      result = raw;
+    }
     // bruxism is the lower-precision class — hold it to a higher bar so a hissy
     // fan or distant traffic isn't logged as teeth grinding.
     if (result.type === 'snoring' && result.confidence >= min) {
@@ -521,24 +572,29 @@ export class AudioEngine {
     if (result.type === 'bruxism' && result.confidence >= Math.max(min, 0.5)) {
       return { type: 'bruxism', confidence: result.confidence };
     }
-    // a confident quiet/silence verdict wins even if the raw level looks loud
-    if ((result.type === 'quiet' || result.type === 'silence') && result.confidence >= 0.6) {
+    const level = this._level(msg);
+    const threshold = this.loudThreshold();
+    const loud = level >= threshold;
+    // a confident quiet verdict wins unless the sound clearly stands out
+    if ((result.type === 'quiet' || result.type === 'silence') && result.confidence >= 0.6 && level < threshold * 2) {
       return null;
     }
-    const loud = (msg.rms || 0) >= Math.max(LOUD_NOISE_RMS, this.noiseGate * 3);
     if (result.type === 'noise' && result.confidence >= 0.4 && loud) {
       return { type: 'noise', confidence: result.confidence };
     }
     if (loud) {
-      return { type: 'noise', confidence: clamp01((msg.rms - LOUD_NOISE_RMS) * 12 + 0.4) };
+      // 0.4 at the threshold, rising ~0.1 per 3 dB above it
+      const overDb = 20 * Math.log10(level / threshold);
+      return { type: 'noise', confidence: clamp01(0.4 + overDb / 30) };
     }
     return null;
   }
 
-  _handleClassification(result, msg) {
+  _handleClassification(result, msg, raw = null) {
     const ctxTime = typeof msg.timestamp === 'number' ? msg.timestamp : this._wallToCtx(Date.now());
     const wall = this._ctxToWall(ctxTime);
-    const positive = this._effectiveType(result, msg);
+    const positive = this._effectiveType(result, msg, raw);
+    this._trackLevel(msg);
 
     if (positive) {
       const { type, confidence } = positive;
@@ -571,12 +627,21 @@ export class AudioEngine {
         this._negativeStreak = 0;
       }
 
-      if (this._pending.count >= CONFIRM_COUNT && !this._pending.emitted) this._confirmPending();
+      if (this._pending.count >= this._confirmCount(type, msg) && !this._pending.emitted) this._confirmPending();
       else if (this._pending.emitted) this._growPending();
     } else if (this._pending) {
       this._negativeStreak += 1;
       if (this._negativeStreak >= END_NEGATIVE_STREAK) this._finalizePending();
     }
+  }
+
+  // windows needed to confirm an event. A single clearly-loud generic sound (a
+  // cough, a word, a bang) is real on its own; snoring/grinding keep the 2-window
+  // check against classifier flicker unless sensitivity is at maximum.
+  _confirmCount(type, msg) {
+    if (this.sensitivity >= 0.8) return 1;
+    if (type === 'noise' && this._level(msg) >= this.loudThreshold() * 2) return 1;
+    return CONFIRM_COUNT;
   }
 
   _confirmPending() {
@@ -698,7 +763,7 @@ export class AudioEngine {
     if (db > this._tally.loudestDb) this._tally.loudestDb = db;
 
     // qualify on a loud instantaneous peak OR a loud sustained level
-    if (peak < HIGHLIGHT_MIN_PEAK && rms < HIGHLIGHT_MIN_RMS) return;
+    if (peak < HIGHLIGHT_MIN_PEAK && rms < HIGHLIGHT_MIN_RMS && this._level(msg) < this.loudThreshold()) return;
 
     const ctxTime = typeof msg.timestamp === 'number' ? msg.timestamp : this._wallToCtx(Date.now());
     const wall = this._ctxToWall(ctxTime);

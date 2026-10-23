@@ -110,7 +110,11 @@ class App {
 
       // restore the saved mic sensitivity
       try {
-        const saved = await this.storage.getSetting('sensitivity', 0.5);
+        // 'sensitivityV2' replaced 'sensitivity' when detection became
+        // floor-relative; old saves were almost always the old 0.5 default,
+        // so lift them to the new default once
+        let saved = await this.storage.getSetting('sensitivityV2', null);
+        if (saved == null) saved = Math.max(await this.storage.getSetting('sensitivity', 0.7), 0.7);
         const slider = document.getElementById('setting-sensitivity');
         if (slider) slider.value = Math.round(saved * 100);
         this.engine.setSensitivity(saved);
