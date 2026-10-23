@@ -11,6 +11,7 @@ import { SessionRecovery } from './session-recovery.js';
 import { authManager } from './auth.js';
 import { SyncManager } from './sync.js';
 import { getFirebase } from './firebase.js';
+import { bedtimeReminder, parseTime } from './bedtime-reminder.js';
 
 class App {
   constructor() {
@@ -109,13 +110,18 @@ class App {
 
       // restore the saved mic sensitivity
       try {
-        const saved = await this.storage.getSetting('sensitivity', 0.5);
+        // 'sensitivityV2' replaced 'sensitivity' when detection became
+        // floor-relative; old saves were almost always the old 0.5 default,
+        // so lift them to the new default once
+        let saved = await this.storage.getSetting('sensitivityV2', null);
+        if (saved == null) saved = Math.max(await this.storage.getSetting('sensitivity', 0.7), 0.7);
         const slider = document.getElementById('setting-sensitivity');
         if (slider) slider.value = Math.round(saved * 100);
         this.engine.setSensitivity(saved);
       } catch (_) { /* defaults are fine */ }
       this._syncSensitivityLabel();
       this._updateAccountUI();
+      await this._initBedtimeReminder();
 
       // pull fresh cloud data whenever the app comes back to the foreground
       document.addEventListener('visibilitychange', () => {
@@ -583,6 +589,11 @@ class App {
   // ========== EVENTS ==========
 
   _onEvent(event) {
+    // a sound first logged as generic noise, now recognised as snoring/grinding
+    if (event.upgradedFrom === 'noise' && this.noiseCount > 0) {
+      this.noiseCount--;
+      document.getElementById('stat-noise-count').textContent = this.noiseCount;
+    }
     if (event.type === 'snoring') {
       this.snoringCount++;
       document.getElementById('stat-snoring-count').textContent = this.snoringCount;
@@ -1370,6 +1381,75 @@ class App {
       console.error('Failed to load sample session:', err);
       this._banner('Could not load sample data.');
     }
+  }
+
+  // ========== BEDTIME REMINDER ==========
+
+  async _initBedtimeReminder() {
+    const toggle = document.getElementById('setting-bedtime-enabled');
+    const timeInput = document.getElementById('setting-bedtime-time');
+    const desc = document.getElementById('setting-bedtime-desc');
+    if (!toggle || !timeInput) return;
+
+    if (!bedtimeReminder.supported) {
+      // the browser can't schedule notifications while the page is closed
+      toggle.disabled = true;
+      timeInput.disabled = true;
+      if (desc) desc.textContent = 'Available in the SleepSensor iOS / Android app.';
+      return;
+    }
+
+    try {
+      toggle.checked = !!(await this.storage.getSetting('bedtimeReminder', false));
+      timeInput.value = await this.storage.getSetting('bedtimeTime', '23:00');
+    } catch (_) { /* defaults are fine */ }
+
+    const apply = async () => {
+      const time = parseTime(timeInput.value);
+      if (!toggle.checked || !time) {
+        await bedtimeReminder.disable();
+        return;
+      }
+      const res = await bedtimeReminder.enable(time);
+      if (res.ok) return;
+      toggle.checked = false;
+      await this.storage.setSetting('bedtimeReminder', false);
+      this._banner(
+        res.reason === 'permission'
+          ? 'Allow notifications for SleepSensor in your phone settings to get bedtime reminders.'
+          : 'Could not schedule the bedtime reminder.',
+        { autoHideMs: 8000 }
+      );
+    };
+
+    toggle.addEventListener('change', async () => {
+      await this.storage.setSetting('bedtimeReminder', toggle.checked);
+      await apply();
+      if (toggle.checked) this._banner(`Bedtime reminder set for ${timeInput.value} every night.`, { autoHideMs: 4000 });
+    });
+    timeInput.addEventListener('change', async () => {
+      if (!parseTime(timeInput.value)) return;
+      await this.storage.setSetting('bedtimeTime', timeInput.value);
+      await apply();
+    });
+
+    bedtimeReminder.onAction((actionId) => this._onBedtimeAction(actionId));
+
+    // re-schedule on launch so a changed OS / reinstall never leaves it stale
+    if (toggle.checked) apply();
+  }
+
+  _onBedtimeAction(actionId) {
+    if (actionId === 'later' || this.isRecording) return;
+    this._showScreen('record');
+    if (actionId === 'start') {
+      this._startRecording();
+      return;
+    }
+    // tapped the notification itself — ask first
+    this._showConfirm('Start SleepSensor?', "It's bedtime. Start monitoring your sleep now?", () => {
+      this._startRecording();
+    });
   }
 
   // ========== CONFIRM DIALOG ==========

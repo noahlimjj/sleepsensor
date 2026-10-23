@@ -370,14 +370,36 @@
               <div style="display:flex; justify-content:space-between; margin-bottom:12px;">
                 <label class="setting-label" for="setting-sensitivity">Microphone Sensitivity</label>
               </div>
-              <input type="range" id="setting-sensitivity" class="setting-slider--full" min="0" max="100" value="50" aria-label="Microphone sensitivity">
+              <input type="range" id="setting-sensitivity" class="setting-slider--full" min="0" max="100" value="70" aria-label="Microphone sensitivity">
               <div style="display:flex; justify-content:space-between; margin-top:8px;">
                 <span class="setting-desc" style="font-size:0.75rem;">Less sensitive</span>
                 <span class="setting-desc" style="font-size:0.75rem;">More sensitive</span>
               </div>
-              <div class="setting-desc" id="setting-sensitivity-desc" style="margin-top:12px; font-weight:500; color:var(--white);">Medium</div>
-              <div class="setting-desc" id="setting-sensitivity-detail" style="margin-top:2px;">Captures normal snoring.</div>
+              <div class="setting-desc" id="setting-sensitivity-desc" style="margin-top:12px; font-weight:500; color:var(--white);">High</div>
+              <div class="setting-desc" id="setting-sensitivity-detail" style="margin-top:2px;">Picks up light snoring and soft speech. Good for a quiet bedroom.</div>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-group" id="bedtime-section">
+        <h2 class="settings-group-title">Bedtime Reminder</h2>
+        <div class="setting-card">
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="setting-bedtime-enabled">Remind me to start SleepSensor</label>
+              <div class="setting-desc" id="setting-bedtime-desc">A nightly notification asking if you want to start monitoring.</div>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="setting-bedtime-enabled" aria-label="Bedtime reminder">
+              <span class="toggle-track"></span>
+            </label>
+          </div>
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="setting-bedtime-time">Reminder time</label>
+            </div>
+            <input type="time" id="setting-bedtime-time" class="setting-time" value="23:00">
           </div>
         </div>
       </div>

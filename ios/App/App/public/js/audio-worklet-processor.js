@@ -194,6 +194,32 @@ function peakAbs(buf) {
   return m;
 }
 
+// loudest short-frame RMS in the buffer. A 2 s average dilutes a brief sound
+// (a cough, a single snore, a grind burst) into the background; the loudest
+// ~100 ms slice does not.
+function maxFrameRms(buf, frame = 1600) {
+  if (buf.length <= frame) return rms(buf);
+  let m = 0;
+  const hop = frame >> 1;
+  for (let i = 0; i + frame <= buf.length; i += hop) {
+    const r = rms(buf, i, i + frame);
+    if (r > m) m = r;
+  }
+  return m;
+}
+
+// background level inside the buffer: a low percentile of short-frame RMS.
+// Even mid-snoring-bout the gaps between breaths fall back to the room's own
+// noise, so this tracks the floor without being dragged up by the sound.
+function quietFrameRms(buf, frame = 1600, pct = 0.1) {
+  if (buf.length <= frame) return rms(buf);
+  const hop = frame >> 1;
+  const vals = [];
+  for (let i = 0; i + frame <= buf.length; i += hop) vals.push(rms(buf, i, i + frame));
+  vals.sort((a, b) => a - b);
+  return vals[Math.floor((vals.length - 1) * pct)];
+}
+
 // zero-crossing rate — high for noise/grinding, low for tonal snoring
 function zcr(buf) {
   let c = 0;
@@ -307,10 +333,12 @@ if (typeof registerProcessor !== 'undefined' && typeof AudioWorkletProcessor !==
     _processWindow() {
       const energy = rms(this.window);
       const peak = peakAbs(this.window);
+      const active = maxFrameRms(this.window);
+      const quiet = quietFrameRms(this.window);
       const zc = zcr(this.window);
       const timestamp = currentTime;
-      if (energy < this.threshold) {
-        this.port.postMessage({ type: 'silence', timestamp, rms: energy, peak, zcr: zc });
+      if (active < this.threshold) {
+        this.port.postMessage({ type: 'silence', timestamp, rms: energy, activeRms: active, quietRms: quiet, peak, zcr: zc });
       } else {
         const spec = melSpectrogram(this.window, {
           fftSize: FFT_SIZE,
@@ -321,7 +349,7 @@ if (typeof registerProcessor !== 'undefined' && typeof AudioWorkletProcessor !==
           melFb: this.melFb,
         });
         this.port.postMessage(
-          { type: 'spectrogram', data: spec, timestamp, rms: energy, peak, zcr: zc },
+          { type: 'spectrogram', data: spec, timestamp, rms: energy, activeRms: active, quietRms: quiet, peak, zcr: zc },
           [spec.buffer]
         );
       }
@@ -373,6 +401,8 @@ if (typeof module !== 'undefined' && module.exports) {
     melSpectrogram,
     rms,
     peakAbs,
+    maxFrameRms,
+    quietFrameRms,
     zcr,
   };
 }

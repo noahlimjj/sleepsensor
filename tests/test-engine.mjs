@@ -47,6 +47,8 @@ const QUIET = (t) => [
   { type: 'silence', confidence: 0 },
   { type: 'silence', timestamp: t, rms: 0.0005, peak: 0.001 },
 ];
+// a session starts with the room's background, which seeds the ambient floor
+const prime = (engine) => engine._handleClassification(...QUIET(0));
 
 export async function run() {
   section('audio-engine.js — debounce, noise, highlights, dB');
@@ -68,6 +70,7 @@ export async function run() {
   // --- a loud but unclassified window becomes a generic "noise" event ---
   {
     const { engine, calls } = makeEngine();
+    prime(engine);
     for (const t of [2, 4, 6]) engine._handleClassification(...W('other', 0, t, 0.08, 0.15));
     eq(calls.events.length, 1, 'loud unrecognised sound -> one event');
     eq(calls.events[0].type, 'noise', 'event type is noise');
@@ -77,6 +80,7 @@ export async function run() {
   // --- soft speech (rms ~0.015) still registers as noise ---
   {
     const { engine, calls } = makeEngine();
+    prime(engine);
     for (const t of [2, 4, 6]) engine._handleClassification(...W('other', 0, t, 0.015, 0.03));
     eq(calls.events.length, 1, 'soft sound above the ambient floor is still logged');
     eq(calls.events[0].type, 'noise', 'soft sound -> noise event');
@@ -280,6 +284,50 @@ export async function run() {
     const buf = new Float32Array(32000);
     for (let i = 10000; i < 11600; i++) buf[i] = 0.1 * Math.sin(i / 3);
     ok(dsp.maxFrameRms(buf) > 0.05 && dsp.rms(buf) < 0.02, 'maxFrameRms sees a 100 ms burst the 2 s RMS hides');
+    ok(dsp.quietFrameRms(buf) < 0.001, 'quietFrameRms ignores the burst');
+  }
+
+  // --- a bout that starts as generic noise is upgraded once snoring shows ---
+  {
+    const { engine, calls } = makeEngine();
+    prime(engine);
+    engine._handleClassification(...W('other', 0, 2, 0.05, 0.1)); // loud -> noise, confirmed at once
+    eq(calls.events.length, 1, 'loud first window logged immediately');
+    eq(calls.events[0].type, 'noise', 'as noise');
+    engine._handleClassification(...W('snoring', 0.8, 4));
+    engine._handleClassification(...W('snoring', 0.8, 6));
+    const last = calls.events[calls.events.length - 1];
+    eq(last.type, 'snoring', 'upgraded to snoring');
+    eq(last.upgradedFrom, 'noise', 'upgrade notice names the old type');
+    eq(last.eventId, calls.events[0].eventId, 'same event, not a new one');
+    eq(engine._tally.noiseEpisodes, 0, 'noise tally moved');
+    eq(engine._tally.snoringEpisodes, 1, 'to snoring');
+    ok(calls.updated.some((u) => u.type === 'snoring'), 'stored event retyped');
+  }
+
+  // --- a lone loud window the model calls snoring is kept, as a sound ---
+  {
+    const { engine, calls } = makeEngine();
+    prime(engine);
+    engine._handleClassification(...W('snoring', 0.7, 2, 0.05, 0.1));
+    engine._handleClassification(...QUIET(4));
+    engine._handleClassification(...QUIET(6));
+    eq(calls.events.length, 1, 'one-off loud "snore" (a cough) is not dropped');
+    eq(calls.events[0].type, 'noise', 'logged as a generic sound');
+  }
+
+  // --- a long bout does not get absorbed into the floor ---
+  {
+    const { engine, calls } = makeEngine();
+    prime(engine);
+    let t = 0;
+    for (let i = 0; i < 150; i++) {
+      const msg = { type: 'spectrogram', timestamp: (t += 2), rms: 0.004, activeRms: 0.006, quietRms: 0.0006, peak: 0.01 };
+      engine._handleClassification({ type: 'other', confidence: 0 }, msg);
+    }
+    ok(engine._pending && engine._pending.emitted, 'still inside one event after 5 minutes');
+    eq(calls.events.length, 1, 'one continuous event');
+    ok(engine.ambientFloor() < 0.001, 'floor follows the gaps, not the sound');
   }
 
   // --- WAV encoding still intact ---

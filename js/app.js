@@ -589,6 +589,11 @@ class App {
   // ========== EVENTS ==========
 
   _onEvent(event) {
+    // a sound first logged as generic noise, now recognised as snoring/grinding
+    if (event.upgradedFrom === 'noise' && this.noiseCount > 0) {
+      this.noiseCount--;
+      document.getElementById('stat-noise-count').textContent = this.noiseCount;
+    }
     if (event.type === 'snoring') {
       this.snoringCount++;
       document.getElementById('stat-snoring-count').textContent = this.snoringCount;

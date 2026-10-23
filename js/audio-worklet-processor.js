@@ -208,6 +208,18 @@ function maxFrameRms(buf, frame = 1600) {
   return m;
 }
 
+// background level inside the buffer: a low percentile of short-frame RMS.
+// Even mid-snoring-bout the gaps between breaths fall back to the room's own
+// noise, so this tracks the floor without being dragged up by the sound.
+function quietFrameRms(buf, frame = 1600, pct = 0.1) {
+  if (buf.length <= frame) return rms(buf);
+  const hop = frame >> 1;
+  const vals = [];
+  for (let i = 0; i + frame <= buf.length; i += hop) vals.push(rms(buf, i, i + frame));
+  vals.sort((a, b) => a - b);
+  return vals[Math.floor((vals.length - 1) * pct)];
+}
+
 // zero-crossing rate — high for noise/grinding, low for tonal snoring
 function zcr(buf) {
   let c = 0;
@@ -322,10 +334,11 @@ if (typeof registerProcessor !== 'undefined' && typeof AudioWorkletProcessor !==
       const energy = rms(this.window);
       const peak = peakAbs(this.window);
       const active = maxFrameRms(this.window);
+      const quiet = quietFrameRms(this.window);
       const zc = zcr(this.window);
       const timestamp = currentTime;
       if (active < this.threshold) {
-        this.port.postMessage({ type: 'silence', timestamp, rms: energy, activeRms: active, peak, zcr: zc });
+        this.port.postMessage({ type: 'silence', timestamp, rms: energy, activeRms: active, quietRms: quiet, peak, zcr: zc });
       } else {
         const spec = melSpectrogram(this.window, {
           fftSize: FFT_SIZE,
@@ -336,7 +349,7 @@ if (typeof registerProcessor !== 'undefined' && typeof AudioWorkletProcessor !==
           melFb: this.melFb,
         });
         this.port.postMessage(
-          { type: 'spectrogram', data: spec, timestamp, rms: energy, activeRms: active, peak, zcr: zc },
+          { type: 'spectrogram', data: spec, timestamp, rms: energy, activeRms: active, quietRms: quiet, peak, zcr: zc },
           [spec.buffer]
         );
       }
@@ -389,6 +402,7 @@ if (typeof module !== 'undefined' && module.exports) {
     rms,
     peakAbs,
     maxFrameRms,
+    quietFrameRms,
     zcr,
   };
 }

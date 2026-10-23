@@ -94,8 +94,12 @@ export class Classifier {
     const rms = typeof hints.rms === 'number' ? hints.rms : null;
     const db = rms != null ? round1(20 * Math.log10(Math.max(rms, 1e-7))) : undefined;
 
-    if (rms != null && rms < QUIET_RMS) {
-      return { type: 'silence', confidence: clamp01(1 - rms / QUIET_RMS), db, scores: { quiet: 1 } };
+    // the hard silence floor follows the user's sensitivity gate (never above
+    // QUIET_RMS) and is judged on the loudest short slice, not the 2 s average
+    const quietFloor = typeof hints.gate === 'number' ? Math.min(QUIET_RMS, hints.gate) : QUIET_RMS;
+    const level = typeof hints.activeRms === 'number' ? Math.max(hints.activeRms, rms ?? 0) : rms;
+    if (level != null && level < quietFloor) {
+      return { type: 'silence', confidence: clamp01(1 - level / quietFloor), db, scores: { quiet: 1 } };
     }
 
     let probs;
@@ -104,7 +108,10 @@ export class Classifier {
       probs = this._cnnInfer(spectrogram);
       classList = this.cnnMeta.classes;
     } else {
-      const feats = extractFeatures(spectrogram, hints);
+      // loudnessGain normalises a quiet phone recording to the levels the model
+      // was trained on (the spectrogram itself is already level-normalised)
+      const gain = typeof hints.loudnessGain === 'number' ? hints.loudnessGain : 1;
+      const feats = extractFeatures(spectrogram, rms != null && gain !== 1 ? { ...hints, rms: rms * gain } : hints);
       probs = MODEL ? this._infer(feats) : this._heuristic(feats, rms);
     }
 

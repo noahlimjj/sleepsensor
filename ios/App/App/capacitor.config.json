@@ -24,6 +24,7 @@
 	"packageClassList": [
 		"AppPlugin",
 		"DevicePlugin",
+		"LocalNotificationsPlugin",
 		"BackgroundRecorder"
 	]
 }

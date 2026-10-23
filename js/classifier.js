@@ -108,7 +108,10 @@ export class Classifier {
       probs = this._cnnInfer(spectrogram);
       classList = this.cnnMeta.classes;
     } else {
-      const feats = extractFeatures(spectrogram, hints);
+      // loudnessGain normalises a quiet phone recording to the levels the model
+      // was trained on (the spectrogram itself is already level-normalised)
+      const gain = typeof hints.loudnessGain === 'number' ? hints.loudnessGain : 1;
+      const feats = extractFeatures(spectrogram, rms != null && gain !== 1 ? { ...hints, rms: rms * gain } : hints);
       probs = MODEL ? this._infer(feats) : this._heuristic(feats, rms);
     }
 
