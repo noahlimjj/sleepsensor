@@ -13,6 +13,17 @@ import { SyncManager } from './sync.js';
 import { getFirebase } from './firebase.js';
 import { bedtimeReminder, parseTime } from './bedtime-reminder.js';
 
+// loudness wording for a generic sound event: A-weighted when available
+function loudnessLabel(event) {
+  if (typeof event.peakDbA === 'number') {
+    const d = Math.round(event.peakDbA);
+    const word = d >= 70 ? 'Very loud' : d >= 55 ? 'Loud' : d >= 40 ? 'Moderate' : 'Soft';
+    return `${word} · ${d} dBA`;
+  }
+  const d = event.peakDb ?? -30;
+  return d > -6 ? 'Very loud' : d > -18 ? 'Loud' : 'Moderate';
+}
+
 class App {
   constructor() {
     // Engine modules (loaded dynamically)
@@ -107,6 +118,13 @@ class App {
       await this._loadLatestReport();
       this._loadHistory();
       this._updateStorageUsage();
+
+      // restore the dB calibration
+      try {
+        const cal = await this.storage.getSetting('dbCalibration', null);
+        if (cal && typeof cal.offset === 'number') this.engine.setDbCalibration(cal.offset, cal.calibrated);
+      } catch (_) { /* default offset */ }
+      this._syncDbCalibration();
 
       // restore the saved mic sensitivity
       try {
@@ -563,8 +581,8 @@ class App {
         const level = this.engine.getLevel();
         const el = document.getElementById('db-value');
         if (el && level) {
-          const fs = Math.max(-99, Math.round(level.dbFS));
-          el.textContent = `${fs} dBFS · ~${Math.round(level.spl)} dB`;
+          el.textContent = `${level.calibrated ? '' : '~'}${level.dbA} dBA`;
+          el.title = `${Math.max(-99, Math.round(level.dbFS))} dBFS${level.calibrated ? '' : ' · uncalibrated estimate'}`;
         }
       }
 
@@ -631,8 +649,7 @@ class App {
     if (event.type === 'apnea') {
       confEl.textContent = `${Math.round(event.duration || 0)}s, then ${event.arousal === 'gasp' ? 'a gasp' : 'a snort'}`;
     } else if (event.type === 'noise') {
-      const d = event.peakDb ?? -30;
-      confEl.textContent = d > -6 ? 'Very loud' : d > -18 ? 'Loud' : 'Moderate';
+      confEl.textContent = loudnessLabel(event);
     } else {
       confEl.textContent = `${Math.round((event.confidence || 0) * 100)}% sure`;
     }
@@ -723,7 +740,12 @@ class App {
     document.getElementById('report-bruxism-pct').textContent = toPercent(session.bruxismDuration || 0, totalSleep);
     document.getElementById('report-noise-count').textContent = String(session.noiseEpisodes || 0);
     document.getElementById('report-loudest').textContent =
-      typeof session.loudestDb === 'number' ? `peak ${Math.round(session.loudestDb)} dB` : '';
+      typeof session.loudestDbA === 'number'
+        ? `${session.dbCalibrated ? '' : '~'}${Math.round(session.loudestDbA)} dBA peak` +
+          (typeof session.laeqDbA === 'number' ? ` · ${Math.round(session.laeqDbA)} avg` : '')
+        : typeof session.loudestDb === 'number'
+          ? `peak ${Math.round(session.loudestDb)} dBFS`
+          : '';
 
     // Timeline
     const events = await this.storage.getEventsBySession(sessionId);
@@ -860,8 +882,7 @@ class App {
 
       let meta = time;
       if (type === 'noise') {
-        const d = event.peakDb ?? -30;
-        meta += ` · ${d > -6 ? 'Very loud' : d > -18 ? 'Loud' : 'Moderate'}`;
+        meta += ` · ${loudnessLabel(event)}`;
       } else if (type === 'apnea') {
         meta += ` · ${Math.round(event.duration || 0)}s pause`;
       } else if (typeof event.confidence === 'number') {
@@ -1045,6 +1066,26 @@ class App {
     document.getElementById('setting-sensitivity-detail').textContent = d.detail;
   }
 
+  _syncDbCalibration() {
+    const status = document.getElementById('setting-db-status');
+    if (!status || !this.engine) return;
+    status.textContent = this.engine.dbCalibrated
+      ? `Calibrated (offset ${this.engine.dbOffset.toFixed(1)} dB).`
+      : 'Not calibrated: dB readings are estimates (±10 dB).';
+    // live reading next to the calibration box
+    clearInterval(this._dbLiveTimer);
+    this._dbLiveTimer = setInterval(() => {
+      const el = document.getElementById('setting-db-live');
+      if (!el || !this.engine) return;
+      if (!this.engine.isRecording()) {
+        el.textContent = 'Phone now reads: -- dBA (start monitoring to see it)';
+        return;
+      }
+      const lv = this.engine.getLevel();
+      el.textContent = `Phone now reads: ${lv.calibrated ? '' : '~'}${lv.dbA} dBA`;
+    }, 500);
+  }
+
   _bindSettings() {
     // Sensitivity slider
     const slider = document.getElementById('setting-sensitivity');
@@ -1052,6 +1093,28 @@ class App {
       if (!this.engine) return;
       this.engine.setSensitivity(slider.value / 100);
       this._syncSensitivityLabel();
+    });
+
+    // dB calibration against a reference sound level meter
+    document.getElementById('setting-db-calibrate')?.addEventListener('click', () => {
+      if (!this.engine) return;
+      const input = document.getElementById('setting-db-ref');
+      const ref = parseFloat(input.value);
+      const status = document.getElementById('setting-db-status');
+      if (!Number.isFinite(ref) || ref < 20 || ref > 120) {
+        status.textContent = 'Enter the meter reading in dBA (20–120).';
+        return;
+      }
+      if (!this.engine.isRecording() || this.engine.calibrateTo(ref) == null) {
+        status.textContent = 'Start monitoring first so the mic is listening, then calibrate.';
+        return;
+      }
+      input.value = '';
+      this._syncDbCalibration();
+    });
+    document.getElementById('setting-db-reset')?.addEventListener('click', () => {
+      this.engine?.resetDbCalibration();
+      this._syncDbCalibration();
     });
 
     // Sample Night loader (reviewer / testing feature)
@@ -1227,6 +1290,8 @@ class App {
         snoringPercentage: 8.4,
         bruxismPercentage: 2.4,
         loudestDb: -14.2,
+        loudestDbA: 71.5,
+        laeqDbA: 34.8,
         apneaEvents: ahi.apneaEvents,
         apneaDuration: ahi.totalPauseSec,
         estimatedAhi: ahi.estimatedAhi,
@@ -1245,6 +1310,8 @@ class App {
         snoringPercentage: session.snoringPercentage,
         bruxismPercentage: session.bruxismPercentage,
         loudestDb: session.loudestDb,
+        loudestDbA: session.loudestDbA,
+        laeqDbA: session.laeqDbA,
         apneaEvents: session.apneaEvents,
         apneaDuration: session.apneaDuration,
         estimatedAhi: session.estimatedAhi,
@@ -1305,6 +1372,7 @@ class App {
           timestamp: start,
           hasClip: true,
           peakDb: ev.peakDb ?? -20,
+          peakDbA: Math.round((ev.peakDb ?? -20) + 86),
         });
 
         // Add playable audio clip for the event
@@ -1328,6 +1396,7 @@ class App {
           timestamp: ev.startTime,
           hasClip: i < 2,
           peakDb: -18,
+          peakDbA: 68,
         });
         if (i < 2) {
           await this.storage.saveClip({

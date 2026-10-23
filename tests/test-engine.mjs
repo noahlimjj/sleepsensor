@@ -330,6 +330,59 @@ export async function run() {
     ok(engine.ambientFloor() < 0.001, 'floor follows the gaps, not the sound');
   }
 
+  // --- dB: A-weighting matches IEC 61672 at the reference frequencies ---
+  {
+    const { dsp } = await import('./load-worklet.mjs');
+    const expected = { 31.5: -39.4, 100: -19.1, 1000: 0, 4000: 1.0, 8000: -1.1 };
+    for (const fs of [44100, 48000]) {
+      for (const [f, want] of Object.entries(expected)) {
+        const m = dsp.createLevelMeter(fs);
+        const b = new Float32Array(fs * 2);
+        for (let i = 0; i < b.length; i++) b[i] = Math.sin((2 * Math.PI * Number(f) * i) / fs);
+        m.process(b.subarray(0, fs)); // settle
+        const r = m.process(b.subarray(fs));
+        const got = 10 * Math.log10(r.sumSq / r.n / 0.5);
+        ok(Math.abs(got - want) <= 1.0, `A-weighting @${f} Hz/${fs}: ${got.toFixed(1)} dB (IEC ${want})`);
+      }
+    }
+    // Fast (125 ms) time weighting: a tone burst reaches ~full level within ~0.5 s
+    const fs = 48000, m = dsp.createLevelMeter(fs);
+    const b = new Float32Array(fs / 2);
+    for (let i = 0; i < b.length; i++) b[i] = Math.sin((2 * Math.PI * 1000 * i) / fs);
+    const r = m.process(b);
+    ok(Math.abs(10 * Math.log10(r.fastSq / 0.5)) < 0.5, 'Fast-weighted level settles to the tone level');
+  }
+
+  // --- dB: calibration maps the current level onto the reference reading ---
+  {
+    const { engine } = makeEngine();
+    ok(engine.dbCalibrated === false, 'uncalibrated by default');
+    eq(engine.calibrateTo(50), null, 'cannot calibrate before the mic is heard');
+    for (let i = 0; i < 2000; i++) engine._onWorkletMessage({ data: { type: 'energy', rms: 0.01, peak: 0.02, laf: 0.001 } });
+    const off = engine.calibrateTo(52);
+    ok(Math.abs(off - 112) < 0.2, `offset = 52 - (-60 dBFS) = 112 (${off})`);
+    eq(engine.getLevel().dbA, 52, 'meter now reads the reference level');
+    ok(engine.getLevel().calibrated, 'marked calibrated');
+    engine.resetDbCalibration();
+    ok(!engine.dbCalibrated && engine.dbOffset === 105, 'reset restores the default');
+  }
+
+  // --- dB: events and the night carry A-weighted levels ---
+  {
+    const { engine, calls } = makeEngine();
+    engine.setDbCalibration(100, true);
+    prime(engine);
+    const msg = (t, laeq, lafMax) => ({ type: 'spectrogram', timestamp: t, rms: 0.05, peak: 0.1, laeq, lafMax });
+    engine._onWorkletMessage({ data: { ...msg(2, 0.01, 0.03), data: new Float32Array(8) } });
+    engine.classifier.classify = () => ({ type: 'other', confidence: 0, scores: {} });
+    engine._handleClassification({ type: 'other', confidence: 0 }, msg(4, 0.01, 0.03));
+    const ev = calls.events[calls.events.length - 1];
+    ok(ev && Math.abs(ev.peakDbA - 69.5) < 0.2, `event peak = LAFmax in dBA (${ev && ev.peakDbA})`);
+    ok(ev && Math.abs(ev.laeqDbA - 60) < 0.2, `event average = LAeq in dBA (${ev && ev.laeqDbA})`);
+    const night = engine._nightDbA();
+    ok(Math.abs(night.loudestDbA - 69.5) < 0.2 && night.laeqDbA != null, 'night LAeq and loudest dBA tracked');
+  }
+
   // --- WAV encoding still intact ---
   {
     const blob = float32ToWav(new Float32Array(16000), 16000);

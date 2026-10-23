@@ -220,6 +220,64 @@ function quietFrameRms(buf, frame = 1600, pct = 0.1) {
   return vals[Math.floor((vals.length - 1) * pct)];
 }
 
+// ---- A-weighting (IEC 61672) ------------------------------------------------
+// Analog prototype k·s⁴ / ((s+ω1)²(s+ω2)(s+ω3)(s+ω4)²) split into first-order
+// sections, each mapped with the bilinear transform, then normalised to 0 dB
+// at 1 kHz. Run at the device's native rate so the whole audible band counts.
+const A_POLES_HZ = [20.598997, 107.65265, 737.86223, 12194.217];
+
+function aWeightingSections(fs) {
+  const K = 2 * fs;
+  const w = A_POLES_HZ.map((f) => 2 * Math.PI * f);
+  // [b0, b1, a1] for y = b0 x + b1 x[-1] - a1 y[-1]
+  const hp = (wp) => [K / (K + wp), -K / (K + wp), (wp - K) / (K + wp)];
+  const lp = (wp) => [1 / (K + wp), 1 / (K + wp), (wp - K) / (K + wp)];
+  // prewarp the 12 kHz pole: the bilinear transform squeezes it towards Nyquist
+  const w4 = Math.min(K * Math.tan(w[3] / K), K * 20);
+  const secs = [hp(w[0]), hp(w[0]), hp(w[1]), hp(w[2]), lp(w4), lp(w4)];
+  // normalise |H(1 kHz)| to 1
+  const om = (2 * Math.PI * 1000) / fs;
+  let mag = 1;
+  for (const [b0, b1, a1] of secs) {
+    const nr = b0 + b1 * Math.cos(om), ni = -b1 * Math.sin(om);
+    const dr = 1 + a1 * Math.cos(om), di = -a1 * Math.sin(om);
+    mag *= Math.sqrt((nr * nr + ni * ni) / (dr * dr + di * di));
+  }
+  secs[0] = [secs[0][0] / mag, secs[0][1] / mag, secs[0][2]];
+  return secs;
+}
+
+/** Stateful A-weighting filter + IEC "Fast" (125 ms) exponential averager. */
+function createLevelMeter(fs) {
+  const secs = aWeightingSections(fs);
+  const xs = new Float64Array(secs.length);
+  const ys = new Float64Array(secs.length);
+  const alpha = 1 - Math.exp(-1 / (fs * 0.125));
+  let fast = 0; // fast-weighted mean square
+  return {
+    // feeds samples; returns { sumSq, n, fastMaxSq, fastSq }
+    process(buf) {
+      let sumSq = 0;
+      let fastMax = 0;
+      for (let i = 0; i < buf.length; i++) {
+        let v = buf[i];
+        for (let k = 0; k < secs.length; k++) {
+          const [b0, b1, a1] = secs[k];
+          const y = b0 * v + b1 * xs[k] - a1 * ys[k];
+          xs[k] = v;
+          ys[k] = y;
+          v = y;
+        }
+        const sq = v * v;
+        sumSq += sq;
+        fast += alpha * (sq - fast);
+        if (fast > fastMax) fastMax = fast;
+      }
+      return { sumSq, n: buf.length, fastMaxSq: fastMax, fastSq: fast };
+    },
+  };
+}
+
 // zero-crossing rate — high for noise/grinding, low for tonal snoring
 function zcr(buf) {
   let c = 0;
@@ -260,6 +318,13 @@ if (typeof registerProcessor !== 'undefined' && typeof AudioWorkletProcessor !==
       this.totalSamples = 0; // total 16 kHz samples ever written
 
       this.melFb = buildMelFilterbank(NUM_MEL, FFT_SIZE, SR);
+
+      // A-weighted level metering at the native rate
+      this.meter = createLevelMeter(NATIVE_SR);
+      this._aSum = 0; // A-weighted energy over the current window
+      this._aN = 0;
+      this._aFastMax = 0; // loudest Fast-weighted level in the current window
+      this._meterFastMax = 0; // ... since the last meter post
 
       this.frameCounter = 0;
 
@@ -337,8 +402,14 @@ if (typeof registerProcessor !== 'undefined' && typeof AudioWorkletProcessor !==
       const quiet = quietFrameRms(this.window);
       const zc = zcr(this.window);
       const timestamp = currentTime;
+      // A-weighted equivalent level (LAeq) and Fast max (LAFmax) as RMS values
+      const laeq = this._aN ? Math.sqrt(this._aSum / this._aN) : 0;
+      const lafMax = Math.sqrt(this._aFastMax);
+      this._aSum = 0;
+      this._aN = 0;
+      this._aFastMax = 0;
       if (active < this.threshold) {
-        this.port.postMessage({ type: 'silence', timestamp, rms: energy, activeRms: active, quietRms: quiet, peak, zcr: zc });
+        this.port.postMessage({ type: 'silence', timestamp, rms: energy, activeRms: active, quietRms: quiet, peak, zcr: zc, laeq, lafMax });
       } else {
         const spec = melSpectrogram(this.window, {
           fftSize: FFT_SIZE,
@@ -349,7 +420,7 @@ if (typeof registerProcessor !== 'undefined' && typeof AudioWorkletProcessor !==
           melFb: this.melFb,
         });
         this.port.postMessage(
-          { type: 'spectrogram', data: spec, timestamp, rms: energy, activeRms: active, quietRms: quiet, peak, zcr: zc },
+          { type: 'spectrogram', data: spec, timestamp, rms: energy, activeRms: active, quietRms: quiet, peak, zcr: zc, laeq, lafMax },
           [spec.buffer]
         );
       }
@@ -359,6 +430,11 @@ if (typeof registerProcessor !== 'undefined' && typeof AudioWorkletProcessor !==
     process(inputs) {
       const input = inputs[0];
       if (!input || input.length === 0 || !input[0]) return true;
+      const lv = this.meter.process(input[0]);
+      this._aSum += lv.sumSq;
+      this._aN += lv.n;
+      if (lv.fastMaxSq > this._aFastMax) this._aFastMax = lv.fastMaxSq;
+      if (lv.fastMaxSq > this._meterFastMax) this._meterFastMax = lv.fastMaxSq;
       const chan = this._resample(input[0]);
       if (chan.length === 0) return true;
 
@@ -368,7 +444,14 @@ if (typeof registerProcessor !== 'undefined' && typeof AudioWorkletProcessor !==
       this.frameCounter++;
       if (this.frameCounter % 2 === 0) {
         const r = rms(chan);
-        this.port.postMessage({ type: 'energy', rms: r, peak: peakAbs(chan) });
+        this.port.postMessage({
+          type: 'energy',
+          rms: r,
+          peak: peakAbs(chan),
+          laf: Math.sqrt(lv.fastSq), // A-weighted, Fast time-weighted (RMS)
+          lafMax: Math.sqrt(this._meterFastMax),
+        });
+        this._meterFastMax = 0;
       }
 
       // accumulate into the 2s window
@@ -403,6 +486,8 @@ if (typeof module !== 'undefined' && module.exports) {
     peakAbs,
     maxFrameRms,
     quietFrameRms,
+    aWeightingSections,
+    createLevelMeter,
     zcr,
   };
 }

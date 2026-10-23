@@ -200,6 +200,8 @@ export class Storage {
       updatedAt: event.updatedAt || Date.now(),
     };
     if (typeof event.peakDb === 'number') rec.peakDb = event.peakDb;
+    if (typeof event.peakDbA === 'number') rec.peakDbA = event.peakDbA; // loudest, A-weighted
+    if (typeof event.laeqDbA === 'number') rec.laeqDbA = event.laeqDbA; // average, A-weighted
     if (event.arousal) rec.arousal = event.arousal; // apnea: 'snort' | 'gasp' | 'arousal'
     const tx = this._tx('events', 'readwrite');
     tx.objectStore('events').put(rec);

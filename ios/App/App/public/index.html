@@ -379,6 +379,20 @@
               <div class="setting-desc" id="setting-sensitivity-detail" style="margin-top:2px;">Picks up light snoring and soft speech. Good for a quiet bedroom.</div>
             </div>
           </div>
+          <div class="setting-row">
+            <div class="setting-info" style="width: 100%;">
+              <label class="setting-label" for="setting-db-ref">Sound Level Calibration</label>
+              <div class="setting-desc" id="setting-db-status">Not calibrated: dB readings are estimates (±10 dB).</div>
+              <div class="setting-desc" style="margin-top:6px;">For accurate dBA, put the phone next to a sound level meter (set to A-weighting), play a steady sound such as a fan, and enter what the meter shows.</div>
+              <div style="display:flex; gap:8px; align-items:center; margin-top:10px;">
+                <input type="number" id="setting-db-ref" inputmode="decimal" min="20" max="120" step="0.5" placeholder="e.g. 52" aria-label="Reference meter reading in dBA" class="setting-time" style="width:96px;">
+                <span class="setting-desc">dBA</span>
+                <button class="setting-btn" id="setting-db-calibrate" style="margin-left:auto;">Calibrate</button>
+              </div>
+              <div class="setting-desc" id="setting-db-live" style="margin-top:8px;">Phone now reads: -- dBA</div>
+              <button class="setting-btn" id="setting-db-reset" style="margin-top:8px;">Reset to default</button>
+            </div>
+          </div>
         </div>
       </div>
 

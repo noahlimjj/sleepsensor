@@ -64,6 +64,10 @@ const CLASSIFY_FLOOR_DB = -50;
 // a generic sound this far over the loud threshold (+3 dB) is logged from a
 // single window
 const SINGLE_WINDOW_RATIO = 1.41;
+// bout-level snoring: across a bout's windows the model's mean snoring
+// probability is a steadier signal than any one window's top label
+const BOUT_MIN_WINDOWS = 3;
+const BOUT_SNORE_MEAN = 0.3;
 const MAX_LOUDNESS_GAIN_DB = 20;
 
 // loudest-moment highlights — capture the loudest sounds of the night by peak
@@ -108,6 +112,9 @@ export class AudioEngine {
     this.startWallTime = 0;
     this.ctxStartTime = 0;
 
+    this.dbOffset = DEFAULT_DB_OFFSET;
+    this.dbCalibrated = false;
+    this._calMeanSq = 0; // ~2 s running mean of the A-weighted level
     this.sensitivity = DEFAULT_SENSITIVITY;
     this.noiseGate = sensitivityToThreshold(DEFAULT_SENSITIVITY);
     this._floor = null; // ambient background level (RMS), learned per session
@@ -147,19 +154,59 @@ export class AudioEngine {
 
   /**
    * Current input level for a live meter.
-   *   dbFS  — decibels relative to full scale (0 = clipping, quiet ≈ -60)
-   *   spl   — rough estimate of room loudness in dB SPL (uncalibrated, ±10 dB)
+   *   dbFS  — unweighted, relative to full scale (0 = clipping)
+   *   dbA   — A-weighted, Fast (125 ms) sound level in dBA: calibrated when
+   *           `calibrated` is true, otherwise a typical-phone estimate (±10 dB)
+   *   spl   — same as dbA (kept for older callers)
    */
   getLevel() {
     const rms = this._lastRms || 0;
     const peak = this._lastPeak || rms;
+    const laf = this._lastLaf ?? rms;
+    const dbA = Math.round(clampNum(this.toDbA(laf), 0, 130));
     return {
       rms,
       peak,
       dbFS: round1(dbFS(rms)),
       peakDbFS: round1(dbFS(peak)),
-      spl: Math.round(clampNum(dbFS(rms) + SPL_REFERENCE, 0, 130)),
+      dbA,
+      spl: dbA,
+      calibrated: this.dbCalibrated,
     };
+  }
+
+  /** Convert an A-weighted RMS (full scale = 1) to an estimated dBA. */
+  toDbA(rms) {
+    return dbFS(rms) + this.dbOffset;
+  }
+
+  /**
+   * Set the dBFS -> dBA offset. `calibrated` marks a user calibration against a
+   * reference meter (vs the generic phone default).
+   */
+  setDbCalibration(offset, calibrated = true) {
+    this.dbOffset = clampNum(Number(offset) || DEFAULT_DB_OFFSET, 60, 160);
+    this.dbCalibrated = !!calibrated;
+    if (this.storage) {
+      this.storage.setSetting('dbCalibration', { offset: this.dbOffset, calibrated: this.dbCalibrated }).catch(() => {});
+    }
+    return this.dbOffset;
+  }
+
+  /**
+   * Calibrate against a reference: `referenceDbA` is what a sound level meter
+   * (A-weighted) next to the phone reads right now. Uses the last ~2 s average
+   * so a steady sound gives a stable result. Returns the new offset, or null if
+   * the mic has not been heard yet.
+   */
+  calibrateTo(referenceDbA) {
+    const ms = this._calMeanSq;
+    if (!(ms > 0) || !Number.isFinite(Number(referenceDbA))) return null;
+    return this.setDbCalibration(Number(referenceDbA) - 10 * Math.log10(ms), true);
+  }
+
+  resetDbCalibration() {
+    return this.setDbCalibration(DEFAULT_DB_OFFSET, false);
   }
 
   /** Plain-language description of a 0–1 sensitivity value, for the settings UI. */
@@ -386,6 +433,7 @@ export class AudioEngine {
       snoringPercentage: pct(t.snoringDuration),
       bruxismPercentage: pct(t.bruxismDuration),
       loudestDb: t.loudestDb === -Infinity ? null : round1(t.loudestDb),
+      ...this._nightDbA(),
       apneaEvents: t.apneaEvents,
       apneaDuration: round1(t.apneaDuration),
       estimatedAhi: ahi.estimatedAhi,
@@ -445,6 +493,7 @@ export class AudioEngine {
           bruxismEpisodes: t.bruxismEpisodes,
           noiseEpisodes: t.noiseEpisodes,
           loudestDb: t.loudestDb === -Infinity ? null : round1(t.loudestDb),
+          ...this._nightDbA(),
           apneaEvents: t.apneaEvents,
           apneaDuration: round1(t.apneaDuration),
         })
@@ -489,10 +538,16 @@ export class AudioEngine {
     if (msg.type === 'energy') {
       this._lastRms = msg.rms;
       this._lastPeak = msg.peak ?? msg.rms;
+      if (typeof msg.laf === 'number') {
+        this._lastLaf = msg.laf;
+        const sq = msg.laf * msg.laf;
+        this._calMeanSq = this._calMeanSq ? this._calMeanSq + 0.0027 * (sq - this._calMeanSq) : sq; // ~2 s at ~187 Hz
+      }
       this.onEnergy(msg.rms, dbFS(msg.rms));
       return;
     }
     this._lastAudioAt = Date.now();
+    this._trackDbA(msg);
 
     switch (msg.type) {
       case 'silence': {
@@ -531,6 +586,25 @@ export class AudioEngine {
       default:
         break;
     }
+  }
+
+  // ---- sound level (dBA) over the night --------------------------------
+  _trackDbA(msg) {
+    const t = this._tally;
+    if (typeof msg.laeq === 'number') {
+      t.aEnergy += msg.laeq * msg.laeq;
+      t.aWindows += 1;
+    }
+    if (typeof msg.lafMax === 'number' && msg.lafMax > t.lafMax) t.lafMax = msg.lafMax;
+  }
+
+  _nightDbA() {
+    const t = this._tally;
+    return {
+      laeqDbA: t.aWindows ? round1(this.toDbA(Math.sqrt(t.aEnergy / t.aWindows))) : null,
+      loudestDbA: t.lafMax > 0 ? round1(this.toDbA(t.lafMax)) : null,
+      dbCalibrated: this.dbCalibrated,
+    };
   }
 
   // ---- ambient floor -------------------------------------------------
@@ -631,6 +705,8 @@ export class AudioEngine {
         p.confidences.push(confidence);
         p.peaks.push(peak);
         p.maxLevel = Math.max(p.maxLevel, level);
+        this._addLevel(p, msg);
+        this._addBoutEvidence(p, raw);
         this._negativeStreak = 0;
       } else {
         this._finalizePending();
@@ -647,13 +723,19 @@ export class AudioEngine {
           maxLevel: level,
           emitted: false,
           eventId: null,
+          ev: { n: 0, snoring: 0, bruxism: 0 },
+          aEnergy: 0,
+          aWindows: 0,
+          lafMax: 0,
         };
+        this._addLevel(this._pending, msg);
+        this._addBoutEvidence(this._pending, raw);
         this._negativeStreak = 0;
       }
 
       const cur = this._pending;
-      const specific = cur.votes.snoring ? 'snoring' : cur.votes.bruxism ? 'bruxism' : null;
-      if (specific && cur.votes[specific] >= this._confirmCount(specific, msg)) {
+      const specific = cur.votes.snoring ? 'snoring' : cur.votes.bruxism ? 'bruxism' : this._boutSnoring(cur) ? 'snoring' : null;
+      if (specific && (cur.votes[specific] >= this._confirmCount(specific, msg) || (specific === 'snoring' && this._boutSnoring(cur)))) {
         if (!cur.emitted) {
           cur.type = specific;
           this._confirmPending();
@@ -683,6 +765,36 @@ export class AudioEngine {
     return CONFIRM_COUNT;
   }
 
+  _addLevel(p, msg) {
+    if (typeof msg.laeq === 'number') {
+      p.aEnergy += msg.laeq * msg.laeq;
+      p.aWindows += 1;
+    }
+    if (typeof msg.lafMax === 'number' && msg.lafMax > p.lafMax) p.lafMax = msg.lafMax;
+  }
+
+  // calibrated A-weighted levels for an event: loudest (LAFmax) and average (LAeq)
+  _eventDbA(p) {
+    return {
+      peakDbA: p.lafMax > 0 ? round1(this.toDbA(p.lafMax)) : null,
+      laeqDbA: p.aWindows ? round1(this.toDbA(Math.sqrt(p.aEnergy / p.aWindows))) : null,
+    };
+  }
+
+  _addBoutEvidence(p, raw) {
+    const sc = raw && raw.scores;
+    if (!sc) return;
+    p.ev.n += 1;
+    p.ev.snoring += sc.snoring || 0;
+    p.ev.bruxism += sc.bruxism || 0;
+  }
+
+  _boutSnoring(p) {
+    const e = p.ev;
+    if (!e || e.n < BOUT_MIN_WINDOWS) return false;
+    return e.snoring / e.n >= BOUT_SNORE_MEAN && e.snoring > e.bruxism * 1.5;
+  }
+
   // an emitted generic sound turned out to be a snoring/grinding bout
   _retypePending(type) {
     const p = this._pending;
@@ -699,6 +811,7 @@ export class AudioEngine {
       confidence: round3(confidence),
       severity: Classifier.severityFor(confidence),
       peakDb: round1(dbFS(Math.max(...p.peaks))),
+      ...this._eventDbA(p),
       timestamp: Math.round(p.startWall),
       duration: round1(Math.max(WINDOW_SEC, (p.lastWall - p.startWall) / 1000)),
       eventId: p.eventId,
@@ -723,6 +836,7 @@ export class AudioEngine {
       confidence: round3(confidence),
       severity,
       peakDb,
+      ...this._eventDbA(p),
       timestamp: Math.round(p.startWall),
       hasClip: false,
     };
@@ -734,6 +848,7 @@ export class AudioEngine {
       confidence: round3(confidence),
       severity,
       peakDb,
+      ...this._eventDbA(p),
       timestamp: Math.round(p.startWall),
       duration: round1(duration),
       eventId: p.eventId,
@@ -752,6 +867,7 @@ export class AudioEngine {
         confidence: round3(confidence),
         severity: Classifier.severityFor(confidence),
         peakDb: round1(dbFS(Math.max(...p.peaks))),
+        ...this._eventDbA(p),
       })
       .catch(() => {});
   }
@@ -1177,11 +1293,17 @@ function freshTally() {
     apneaEvents: 0,
     apneaDuration: 0,
     loudestDb: -Infinity,
+    aEnergy: 0, // sum of per-window A-weighted mean squares (for LAeq)
+    aWindows: 0,
+    lafMax: 0, // loudest Fast-weighted A level (RMS)
   };
 }
 // A phone mic at ~0.5 m: full-scale (dBFS 0) corresponds very roughly to a
 // ~105 dB SPL source. Used only for a friendly, clearly-labelled estimate.
-const SPL_REFERENCE = 105;
+// default dBFS -> dBA offset for an uncalibrated phone mic. There is no
+// universal value (it depends on the mic and on iOS/browser processing), so the
+// UI marks readings "est." until the user calibrates against a reference meter.
+const DEFAULT_DB_OFFSET = 105;
 
 function dbFS(rms) {
   return 20 * Math.log10(Math.max(rms || 0, 1e-7));
