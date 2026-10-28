@@ -144,7 +144,8 @@ export async function run() {
   // --- a genuinely quiet window creates no highlight but still updates loudestDb ---
   {
     const { engine, calls } = makeEngine();
-    engine._considerHighlight({ type: 'silence', timestamp: 5, rms: 0.0008, peak: 0.002 }, { type: 'silence', confidence: 0 });
+    // below the default noise gate (~-68 dBFS), i.e. a silent room
+    engine._considerHighlight({ type: 'silence', timestamp: 5, rms: 0.0002, peak: 0.0004 }, { type: 'silence', confidence: 0 });
     eq(engine._highlights.length, 0, 'quiet window is not a highlight');
     eq(calls.highlights.length, 0, 'nothing persisted for a quiet window');
     ok(engine._tally.loudestDb < -40, 'loudestDb still tracks the (quiet) peak');

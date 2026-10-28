@@ -56,14 +56,24 @@ const LOUD_NOISE_RMS = 0.012; // ~ -38 dBFS, roughly soft speech at bedside
 // of talking barely moves it.
 const FLOOR_RISE_DB = 0.5; // max rise per 2 s window (~15 dB/min)
 const FLOOR_FALL = 0.5; // blend factor towards a quieter window
+// the floor hugs the room's quietest moments, so a background that swells and
+// fades (AC cycling, a fan's airflow) would read as a "sound" on every swell.
+// A window must also clear the quiet level of the last few windows (its own
+// included) by this much — a brief cough or word barely lifts the quiet level,
+// a swelling background lifts it along with the peak.
+const RECENT_QUIET_WINDOWS = 5; // 10 s
+const RECENT_QUIET_MARGIN_DB = 2;
+// ...but it may lift the bar at most this far, so a sustained sound (talking,
+// a fan switching on) still registers until the floor catches up
+const RECENT_QUIET_MAX_LIFT_DB = 6;
 const DEFAULT_SENSITIVITY = 0.7;
 // the classifier's loudness feature was trained on close-mic recordings; a
 // phone across the bed hears the same sounds 10-20 dB quieter. Treat the room
 // floor as a reference and lift it to this level (capped) before classifying.
 const CLASSIFY_FLOOR_DB = -50;
-// a generic sound this far over the loud threshold (+3 dB) is logged from a
+// a generic sound this far over the loud threshold (+1.5 dB) is logged from a
 // single window
-const SINGLE_WINDOW_RATIO = 1.41;
+const SINGLE_WINDOW_RATIO = 1.19;
 // bout-level snoring: across a bout's windows the model's mean snoring
 // probability is a steadier signal than any one window's top label
 const BOUT_MIN_WINDOWS = 3;
@@ -73,10 +83,10 @@ const MAX_LOUDNESS_GAIN_DB = 20;
 // loudest-moment highlights — capture the loudest sounds of the night by peak
 // amplitude, whatever they are (a shout, a bang, a dog, a snore). A window
 // qualifies on peak OR average level, so brief transients are not missed.
-const MAX_HIGHLIGHTS = 12;
+const MAX_HIGHLIGHTS = 20;
 const HIGHLIGHT_MIN_PEAK = 0.05; // ~ -26 dBFS instantaneous — clearly audible
 const HIGHLIGHT_MIN_RMS = 0.012; // ~ -38 dBFS sustained
-const HIGHLIGHT_MIN_GAP_MS = 20000; // collapse repeats of the same loud bout
+const HIGHLIGHT_MIN_GAP_MS = 12000; // collapse repeats of the same loud bout
 const HIGHLIGHT_PAD_SEC = 3;
 
 // breathing-pause clips: the tail of the pause plus the snort/gasp that ends it
@@ -118,6 +128,7 @@ export class AudioEngine {
     this.sensitivity = DEFAULT_SENSITIVITY;
     this.noiseGate = sensitivityToThreshold(DEFAULT_SENSITIVITY);
     this._floor = null; // ambient background level (RMS), learned per session
+    this._recentQuiet = []; // quiet-slice level of the last few windows
 
     // debounce state
     this._pending = null;
@@ -354,6 +365,7 @@ export class AudioEngine {
       this._smoother.reset();
       this.apneaDetector.reset();
       this._floor = null;
+      this._recentQuiet = [];
 
       await this.wakeLock.acquire();
       if (typeof document !== 'undefined') document.addEventListener('visibilitychange', this._onVisibility);
@@ -612,6 +624,13 @@ export class AudioEngine {
     return Math.max(msg.activeRms ?? 0, msg.rms ?? 0);
   }
 
+  _noteQuiet(msg) {
+    const level = typeof msg.quietRms === 'number' ? msg.quietRms : this._level(msg);
+    if (!this._recentQuiet) this._recentQuiet = [];
+    this._recentQuiet.push(level);
+    if (this._recentQuiet.length > RECENT_QUIET_WINDOWS) this._recentQuiet.shift();
+  }
+
   _trackLevel(msg) {
     // prefer the quietest slices of the window (between breaths/snores); fall
     // back to the window level when the worklet doesn't report them
@@ -636,10 +655,16 @@ export class AudioEngine {
 
   /** RMS a window must reach to count as a sound worth logging. */
   loudThreshold() {
-    // 10 dB above the floor at minimum sensitivity, 4 dB at maximum
-    const marginDb = 10 - 6 * this.sensitivity;
+    // 7 dB above the floor at minimum sensitivity, 2 dB at maximum
+    // (3.5 dB at the 0.7 default)
+    const marginDb = 7 - 5 * this.sensitivity;
     const relative = this.ambientFloor() * Math.pow(10, marginDb / 20);
-    return Math.max(this.noiseGate, relative);
+    const recent = this._recentQuiet && this._recentQuiet.length ? Math.max(...this._recentQuiet) : 0;
+    const swell = Math.min(
+      recent * Math.pow(10, RECENT_QUIET_MARGIN_DB / 20),
+      relative * Math.pow(10, RECENT_QUIET_MAX_LIFT_DB / 20),
+    );
+    return Math.max(this.noiseGate, relative, swell);
   }
 
   // Decide the effective label for a window: classifier verdict, or a generic
@@ -685,6 +710,7 @@ export class AudioEngine {
     // the session's first window seeds the floor, so a fan or AC that is
     // already running is background from the start rather than a "sound"
     if (this._floor == null) this._trackLevel(msg);
+    this._noteQuiet(msg);
     const positive = this._effectiveType(result, msg, raw);
     this._trackLevel(msg);
 
@@ -878,9 +904,9 @@ export class AudioEngine {
     this._negativeStreak = 0;
     if (!p) return;
     if (!p.emitted) {
-      // a loud sound the model guessed was snoring/grinding but that never
-      // repeated is still a real sound: log it rather than drop it
-      if (p.maxLevel < this.loudThreshold() * SINGLE_WINDOW_RATIO) return;
+      // a sound the model guessed was snoring/grinding but that never
+      // repeated is still a real sound: log it if it stood out from the room
+      if (p.maxLevel < this.loudThreshold()) return;
       p.type = 'noise';
       this._pending = p;
       this._confirmPending();
@@ -1344,12 +1370,12 @@ function cryptoId() {
  * floor below which a 2-second window is treated as pure silence and skipped;
  * the live dB meter still shows every sound.
  * Higher sensitivity => lower gate => quieter sounds get classified.
- * 0.0 -> ~0.02 (-34 dBFS), 0.5 -> ~0.002 (-54 dBFS), 0.7 -> ~0.0006 (-64 dBFS),
- * 1.0 -> ~0.0003 (-70 dBFS, about a phone mic's own noise in a silent room)
+ * 0.0 -> ~0.0125 (-38 dBFS), 0.5 -> ~0.0013 (-58 dBFS), 0.7 -> ~0.00038 (-68 dBFS),
+ * 1.0 -> ~0.0002 (-74 dBFS, below a phone mic's own noise in a silent room)
  */
 export function sensitivityToThreshold(v) {
   const s = clamp01(v);
-  return 0.0003 + (0.02 - 0.0003) * Math.pow(1 - s, 3.5);
+  return 0.0002 + (0.0125 - 0.0002) * Math.pow(1 - s, 3.5);
 }
 
 export default AudioEngine;
