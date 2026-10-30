@@ -42,6 +42,7 @@ async function main() {
 
   try {
     const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, permissions: ['microphone'] });
+    await ctx.addInitScript(() => { window.__ssMinSessionMs = 0; }); // tests record short sessions
     const page = await ctx.newPage();
     const errors = [];
     page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));

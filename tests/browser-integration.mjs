@@ -85,6 +85,7 @@ async function main() {
 
     // ---- A. pipeline harness ----------------------------------------
     console.log('\n▸ end-to-end audio pipeline');
+    await ctx.addInitScript(() => { window.__ssMinSessionMs = 0; }); // tests record short sessions
     const page = await ctx.newPage();
     const consoleErrors = [];
     page.on('console', (m) => {

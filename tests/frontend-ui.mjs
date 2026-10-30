@@ -44,6 +44,7 @@ async function main() {
 
   try {
     const ctx = await browser.newContext({ permissions: ['microphone'] });
+    await ctx.addInitScript(() => { window.__ssMinSessionMs = 0; }); // tests record short sessions
     const page = await ctx.newPage();
     const errors = [];
     page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });

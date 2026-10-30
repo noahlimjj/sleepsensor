@@ -47,6 +47,11 @@ html {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* iOS: follow the system text size (Dynamic Type) */
+@supports (font: -apple-system-body) and (-webkit-touch-callout: none) {
+  html { font: -apple-system-body; }
+}
+
 body {
   font-family: var(--font-main);
   font-weight: 400;
@@ -170,7 +175,7 @@ a {
   align-items: center;
   justify-content: center;
   gap: 4px;
-  color: var(--mid);
+  color: var(--mid-light);
 }
 
 .nav-btn svg {
@@ -457,7 +462,7 @@ a {
 
 .background-guidance {
   font-size: 0.75rem;
-  color: var(--mid);
+  color: var(--mid-light);
   margin-top: 12px;
   max-width: 240px;
   text-align: center;
@@ -548,7 +553,7 @@ a {
 
 .summary-card-sub {
   font-size: 0.75rem;
-  color: var(--mid);
+  color: var(--mid-light);
   margin-top: 2px;
 }
 
@@ -713,7 +718,7 @@ a {
 }
 
 .clip-card:active {
-  border-color: var(--mid);
+  border-color: var(--mid-light);
 }
 
 .clip-play-btn {
@@ -756,7 +761,7 @@ a {
 
 .clip-duration {
   font-size: 0.85rem;
-  color: var(--mid);
+  color: var(--mid-light);
   font-variant-numeric: tabular-nums;
 }
 
@@ -811,7 +816,7 @@ a {
 
 .highlight-meta {
   font-size: 0.75rem;
-  color: var(--mid);
+  color: var(--mid-light);
 }
 
 /* ========== HISTORY ========== */
@@ -881,7 +886,7 @@ a {
 }
 
 .session-item:active {
-  border-color: var(--mid);
+  border-color: var(--mid-light);
   background: var(--mid-dark);
 }
 
@@ -950,7 +955,7 @@ a {
 .session-arrow {
   width: 20px;
   height: 20px;
-  color: var(--mid);
+  color: var(--mid-light);
 }
 
 /* ========== SETTINGS ========== */
@@ -1355,7 +1360,7 @@ a {
   color: var(--white);
   font-size: 0.95rem;
 }
-.auth-email-form input::placeholder { color: var(--mid); }
+.auth-email-form input::placeholder { color: var(--mid-light); }
 .auth-email-links {
   display: flex;
   justify-content: space-between;
@@ -1376,7 +1381,7 @@ a {
 .auth-fineprint {
   margin-top: 20px;
   font-size: 0.72rem;
-  color: var(--mid);
+  color: var(--mid-light);
 }
 
 /* ---- Utilities ---- */
