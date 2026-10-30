@@ -476,6 +476,7 @@ class App {
     try {
       const summary = await this.engine.stop();
       this.isRecording = false;
+      const prevSessionId = this.currentSessionId;
       this.currentSessionId = summary ? summary.sessionId : this.currentSessionId;
 
       // Update UI
@@ -503,6 +504,14 @@ class App {
             ? 'Recording stopped — device storage is full. Everything captured was saved.'
             : `Recording stopped (${summary.stopReason}).`;
         this._banner(why, { autoHideMs: 15000 });
+      }
+
+      // an accidental tap-and-stop shouldn't become a "night" with an Optimal report
+      if (summary && summary.sessionId && summary.stopReason === 'user' && Date.now() - summary.startTime < (window.__ssMinSessionMs ?? 60000)) {
+        await this.storage.deleteSession(summary.sessionId).catch(() => {});
+        this.currentSessionId = prevSessionId === summary.sessionId ? null : prevSessionId;
+        this._banner('Not saved: that was under a minute. Start monitoring at bedtime and stop it when you wake up.', { autoHideMs: 8000 });
+        return;
       }
 
       // show the report screen first (so canvases have a size), then fill it

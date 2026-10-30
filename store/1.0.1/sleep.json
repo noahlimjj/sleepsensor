@@ -1,0 +1,18 @@
+{
+ "name": "Sleep Sensor",
+ "app": "6822355889",
+ "version": "1.0.1",
+ "build": "14",
+ "subtitle": "Snoring & teeth grinding log",
+ "keywords": "snore,snoring,bruxism,teeth grinding,grind,clench,night,recorder,tracker,sound,audio,monitor,talk",
+ "promo": "Find out if you snore or grind your teeth. Put your phone by the bed; get a morning report with clips. 100% on-device.",
+ "description": "Do you snore or grind your teeth? Put your phone by the bed tonight and find out. In the morning you get a report with the loudest moments to play back.\n\nEverything is analysed on your phone: your audio never leaves it. No account needed.\n\nKEY FEATURES:\n\u2022 Snoring and teeth grinding (bruxism) detection, told apart from quiet sleep and background noise.\n\u2022 Morning report: total time, snoring and grinding minutes, a sleep timeline and a severity breakdown.\n\u2022 Loudest moments: short clips of snoring and grinding with time and loudness, so you can hear it yourself.\n\u2022 Works overnight with the screen locked on your bedside table.\n\u2022 History and trends across nights.\n\u2022 100% private and on-device: sound analysis runs locally, works in Airplane mode, no sign-up.\n\u2022 Bedtime reminder, adjustable microphone sensitivity and optional dB calibration.\n\nIMPORTANT: SleepSensor is a general wellness and sleep sound logger. It is not a medical device and does not diagnose, treat, cure or prevent sleep apnea, bruxism or any other medical condition. If you are concerned about your sleep or breathing, talk to a doctor.",
+ "whatsNew": "\u2022 Text now follows your iPhone text size\n\u2022 Easier-to-read labels and buttons\n\u2022 Accidental sub-minute recordings are no longer saved as a night\n\u2022 More sensitive sound detection\n\u2022 New app icon",
+ "shotType": "APP_IPHONE_67",
+ "shots": [
+  "/Users/noah/scratch-asc/polish/sleep/1-report.png",
+  "/Users/noah/scratch-asc/polish/sleep/2-highlights.png",
+  "/Users/noah/scratch-asc/polish/sleep/3-record.png",
+  "/Users/noah/scratch-asc/polish/sleep/4-history.png"
+ ]
+}

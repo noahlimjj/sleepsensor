@@ -180,6 +180,7 @@ if [[ "$CONFIGURATION" == "Debug" ]]; then
   install_framework "${BUILT_PRODUCTS_DIR}/CapacitorApp/CapacitorApp.framework"
   install_framework "${BUILT_PRODUCTS_DIR}/CapacitorCordova/Cordova.framework"
   install_framework "${BUILT_PRODUCTS_DIR}/CapacitorDevice/CapacitorDevice.framework"
+  install_framework "${BUILT_PRODUCTS_DIR}/CapacitorLocalNotifications/CapacitorLocalNotifications.framework"
   install_framework "${BUILT_PRODUCTS_DIR}/SleepsensorBackgroundRecorder/SleepsensorBackgroundRecorder.framework"
 fi
 if [[ "$CONFIGURATION" == "Release" ]]; then
@@ -187,6 +188,7 @@ if [[ "$CONFIGURATION" == "Release" ]]; then
   install_framework "${BUILT_PRODUCTS_DIR}/CapacitorApp/CapacitorApp.framework"
   install_framework "${BUILT_PRODUCTS_DIR}/CapacitorCordova/Cordova.framework"
   install_framework "${BUILT_PRODUCTS_DIR}/CapacitorDevice/CapacitorDevice.framework"
+  install_framework "${BUILT_PRODUCTS_DIR}/CapacitorLocalNotifications/CapacitorLocalNotifications.framework"
   install_framework "${BUILT_PRODUCTS_DIR}/SleepsensorBackgroundRecorder/SleepsensorBackgroundRecorder.framework"
 fi
 if [ "${COCOAPODS_PARALLEL_CODE_SIGN}" == "true" ]; then

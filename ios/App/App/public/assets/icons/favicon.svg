@@ -1,52 +1,13 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <defs>
-    <!-- Background Gradient -->
-    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#0c1024" />
-      <stop offset="50%" stop-color="#070a18" />
-      <stop offset="100%" stop-color="#03050c" />
-    </linearGradient>
-
-    <!-- Neon Glow Gradient -->
-    <linearGradient id="neonGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#818cf8" />
-      <stop offset="45%" stop-color="#c084fc" />
-      <stop offset="100%" stop-color="#38bdf8" />
-    </linearGradient>
-
-    <!-- Sound Wave Gradient -->
-    <linearGradient id="waveGrad" x1="0%" y1="50%" x2="100%" y2="50%">
-      <stop offset="0%" stop-color="#a855f7" />
-      <stop offset="50%" stop-color="#60a5fa" />
-      <stop offset="100%" stop-color="#22d3ee" />
-    </linearGradient>
-
-    <!-- Ambient Glow Filter -->
-    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
-      <feGaussianBlur stdDeviation="2" result="blur" />
-      <feComposite in="SourceGraphic" in2="blur" operator="over" />
-    </filter>
-  </defs>
-
-  <!-- Dark Rounded Container -->
-  <rect width="64" height="64" rx="16" fill="url(#bgGrad)" />
-  <rect width="64" height="64" rx="16" fill="none" stroke="rgba(129, 140, 248, 0.2)" stroke-width="1" />
-
-  <!-- Crescent Moon -->
-  <path d="M38 14 C27 15 19 24 20 36 C21 46 29 53 40 52 C33 48 30 39 32 30 C34 22 39 17 38 14 Z" 
-        fill="none" 
-        stroke="url(#neonGrad)" 
-        stroke-width="3" 
-        stroke-linecap="round" 
-        stroke-linejoin="round"
-        filter="url(#glow)" />
-
-  <!-- Fluid Sound Wave across the moon -->
-  <path d="M12 34 C16 35 19 41 23 41 C27 41 29 22 33 22 C37 22 39 38 43 38 C47 38 49 30 53 30 C55 30 57 32 58 33" 
-        fill="none" 
-        stroke="url(#waveGrad)" 
-        stroke-width="3" 
-        stroke-linecap="round" 
-        stroke-linejoin="round"
-        filter="url(#glow)" />
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<defs>
+ <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2a2a7a"/><stop offset="0.55" stop-color="#16154a"/><stop offset="1" stop-color="#090824"/></linearGradient>
+ <linearGradient id="moon" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff6d8"/><stop offset="1" stop-color="#ffc979"/></linearGradient>
+ <linearGradient id="wave" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#5ee7ff" stop-opacity="0.2"/><stop offset="0.3" stop-color="#5ee7ff"/><stop offset="0.7" stop-color="#b88cff"/><stop offset="1" stop-color="#b88cff" stop-opacity="0.2"/></linearGradient>
+ <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="14" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+ <mask id="cres"><rect width="1024" height="1024" fill="#fff"/><circle cx="600" cy="330" r="215" fill="#000"/></mask>
+</defs>
+<rect width="1024" height="1024" fill="url(#bg)"/>
+<g fill="#fff"><circle cx="760" cy="200" r="9" opacity=".8"/><circle cx="840" cy="330" r="6" opacity=".6"/><circle cx="690" cy="120" r="5" opacity=".5"/><circle cx="210" cy="190" r="6" opacity=".5"/></g>
+<circle cx="470" cy="420" r="250" fill="url(#moon)" mask="url(#cres)" filter="url(#glow)"/>
+<path d="M60 760 H300 L350 690 L400 840 L460 620 L520 880 L575 700 L620 760 H964" fill="none" stroke="url(#wave)" stroke-width="30" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"/>
 </svg>

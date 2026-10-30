@@ -6,6 +6,8 @@ PODS:
   - CapacitorCordova (6.2.1)
   - CapacitorDevice (6.0.3):
     - Capacitor
+  - CapacitorLocalNotifications (6.1.3):
+    - Capacitor
   - SleepsensorBackgroundRecorder (1.0.0):
     - Capacitor
 
@@ -14,6 +16,7 @@ DEPENDENCIES:
   - "CapacitorApp (from `../../node_modules/@capacitor/app`)"
   - "CapacitorCordova (from `../../node_modules/@capacitor/ios`)"
   - "CapacitorDevice (from `../../node_modules/@capacitor/device`)"
+  - "CapacitorLocalNotifications (from `../../node_modules/@capacitor/local-notifications`)"
   - SleepsensorBackgroundRecorder (from `../../plugins/background-recorder`)
 
 EXTERNAL SOURCES:
@@ -25,6 +28,8 @@ EXTERNAL SOURCES:
     :path: "../../node_modules/@capacitor/ios"
   CapacitorDevice:
     :path: "../../node_modules/@capacitor/device"
+  CapacitorLocalNotifications:
+    :path: "../../node_modules/@capacitor/local-notifications"
   SleepsensorBackgroundRecorder:
     :path: "../../plugins/background-recorder"
 
@@ -33,8 +38,9 @@ SPEC CHECKSUMS:
   CapacitorApp: a19ccb4f5f32d2534be5c6f524d5a9b614a1e8a7
   CapacitorCordova: 8d93e14982f440181be7304aa9559ca631d77fff
   CapacitorDevice: 3ec44d26b51986119a1987fad1253609d5aacb68
+  CapacitorLocalNotifications: 801867e687c42dd2b33c1e22e08f48e6738d2f72
   SleepsensorBackgroundRecorder: 0acfa77438845913931d5c952b69afb2088803a6
 
-PODFILE CHECKSUM: 9d85a874ce5ac4e07b796dbd531653df390f7f90
+PODFILE CHECKSUM: 8a1d299fc1f2eda66fc1c9c8538e70f1eaaa33e0
 
 COCOAPODS: 1.17.0
