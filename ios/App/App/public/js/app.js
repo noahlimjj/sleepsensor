@@ -324,6 +324,7 @@ class App {
     const statusEl = document.getElementById('account-status');
     const signInBtn = document.getElementById('account-signin-btn');
     const signOutBtn = document.getElementById('account-signout-btn');
+    const deleteBtn = document.getElementById('account-delete-btn');
     const section = document.getElementById('account-section');
     if (!section) return;
 
@@ -335,16 +336,19 @@ class App {
       if (statusEl) statusEl.textContent = this.auth.email || 'Signed in';
       signInBtn && (signInBtn.hidden = true);
       signOutBtn && (signOutBtn.hidden = false);
+      deleteBtn && (deleteBtn.hidden = false);
     } else if (this.auth.isGuest) {
       if (nameEl) nameEl.textContent = 'Guest';
       if (statusEl) statusEl.textContent = 'Sign in to keep your data and sync across devices';
       signInBtn && (signInBtn.hidden = false);
       signOutBtn && (signOutBtn.hidden = true);
+      deleteBtn && (deleteBtn.hidden = true);
     } else {
       if (nameEl) nameEl.textContent = 'Not signed in';
       if (statusEl) statusEl.textContent = '';
       signInBtn && (signInBtn.hidden = false);
       signOutBtn && (signOutBtn.hidden = true);
+      deleteBtn && (deleteBtn.hidden = true);
     }
   }
 
@@ -1232,6 +1236,31 @@ class App {
         async () => {
           await this.auth.signOut();
           await this.auth.signInGuest().catch(() => {});
+        }
+      );
+    });
+    document.getElementById('account-delete-btn')?.addEventListener('click', () => {
+      this._showConfirm(
+        'Delete Account',
+        'This permanently deletes your account and all synced data, plus the sessions and clips on this device. This cannot be undone.',
+        async () => {
+          try {
+            if (this.sync) await this.sync.purgeRemote();
+            await this.auth.deleteAccount();
+          } catch (e) {
+            console.warn('deleteAccount failed:', e);
+            this._banner(`Could not delete account: ${e.message || e}`, { autoHideMs: 6000 });
+            return;
+          }
+          await this.storage.clearAll();
+          this.currentSessionId = null;
+          this._stopCurrentClip();
+          document.getElementById('report-empty').removeAttribute('hidden');
+          document.getElementById('report-content').setAttribute('hidden', '');
+          this._loadHistory();
+          this._updateStorageUsage();
+          await this.auth.signInGuest().catch(() => {});
+          this._banner('Your account has been deleted.', { autoHideMs: 4000 });
         }
       );
     });

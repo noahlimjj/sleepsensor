@@ -50,10 +50,8 @@ function setString(key, value) {
 
 // --- usage-description strings ------------------------------------------------
 setString('NSMicrophoneUsageDescription', MIC_DESC);
-setString(
-  'NSBluetoothAlwaysUsageDescription',
-  'SleepSensor can listen through Bluetooth headphones or a paired mic while you sleep.'
-);
+// no CoreBluetooth is used, so no Bluetooth usage string (strip any older one)
+if (has('NSBluetoothAlwaysUsageDescription')) plist('Delete :NSBluetoothAlwaysUsageDescription');
 
 // --- background audio mode --------------------------------------------------
 if (!has('UIBackgroundModes')) {

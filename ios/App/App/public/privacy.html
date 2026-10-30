@@ -62,10 +62,12 @@
     }
     a { color: #818cf8; text-decoration: none; }
     a:hover { text-decoration: underline; }
+    .back { display: inline-flex; align-items: center; min-height: 44px; padding: calc(env(safe-area-inset-top) + 4px) 0 4px; margin-bottom: 8px; font-weight: 600; }
   </style>
 </head>
 <body>
   <div class="container">
+    <a href="index.html" class="back" id="back-link" onclick="if (history.length > 1) { history.back(); return false; }">&lsaquo; Back to SleepSensor</a>
     <div class="badge">Privacy First</div>
     <h1>Privacy Policy for SleepSensor</h1>
     <div class="updated">Last updated: October 13, 2026</div>
@@ -96,7 +98,7 @@
 
     <h2>4. Data Retention and Deletion</h2>
     <p>
-      You have full control over your data. You can delete your sleep sessions, recorded audio highlights, or reset the app database at any time directly within the app settings.
+      You have full control over your data. You can delete your sleep sessions, recorded audio highlights, or reset the app database at any time directly within the app settings. If you created an account, Settings → Account → Delete account permanently deletes your account and all data synced to it.
     </p>
 
     <h2>5. Medical Disclaimer</h2>

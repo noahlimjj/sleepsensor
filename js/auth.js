@@ -123,6 +123,36 @@ export class AuthManager {
     await this._fb.authFns.signOut(this._fb.auth);
   }
 
+  /** Permanently delete the Firebase account (re-authenticates if Firebase asks). */
+  async deleteAccount() {
+    this._need();
+    const f = this._fb.authFns;
+    const user = this._fb.auth.currentUser;
+    if (!user) return;
+    try {
+      await f.deleteUser(user);
+    } catch (err) {
+      if (!err || err.code !== 'auth/requires-recent-login') throw err;
+      await this._reauth(user);
+      await f.deleteUser(user);
+    }
+  }
+
+  async _reauth(user) {
+    const f = this._fb.authFns;
+    const pid = (user.providerData[0] || {}).providerId;
+    if (pid === 'password') {
+      const pw = window.prompt('For security, enter your password to delete your account.');
+      if (!pw) throw new Error('Account deletion cancelled.');
+      await f.reauthenticateWithCredential(user, f.EmailAuthProvider.credential(user.email, pw));
+    } else if (pid === 'google.com' || pid === 'apple.com') {
+      const provider = pid === 'google.com' ? new f.GoogleAuthProvider() : new f.OAuthProvider('apple.com');
+      await f.reauthenticateWithPopup(user, provider);
+    } else {
+      throw new Error('Please sign out, sign in again, then delete your account.');
+    }
+  }
+
   // ---- internals ---------------------------------------------------
   async _oauth(provider) {
     const f = this._fb.authFns;

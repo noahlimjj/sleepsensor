@@ -11,7 +11,7 @@ import { execFileSync } from 'child_process';
 import { createRequire } from 'module';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
-const PW = process.env.PLAYWRIGHT_PATH || '/Users/User/.nvm/versions/node/v22.18.0/lib/node_modules/playwright/index.js';
+const PW = process.env.PLAYWRIGHT_PATH || 'playwright';
 
 const MIME = {
   '.html': 'text/html',

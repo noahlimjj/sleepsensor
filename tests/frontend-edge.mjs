@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
-const PW = process.env.PLAYWRIGHT_PATH || '/Users/User/.nvm/versions/node/v22.18.0/lib/node_modules/playwright/index.js';
+const PW = process.env.PLAYWRIGHT_PATH || 'playwright';
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.wav': 'audio/wav' };
 
 let fails = 0;

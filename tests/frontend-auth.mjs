@@ -10,7 +10,7 @@ import { execFileSync } from 'child_process';
 import { existsSync } from 'fs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
-const PW = process.env.PLAYWRIGHT_PATH || '/Users/User/.nvm/versions/node/v22.18.0/lib/node_modules/playwright/index.js';
+const PW = process.env.PLAYWRIGHT_PATH || 'playwright';
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.wav': 'audio/wav' };
 
 const CONFIGURED = `
