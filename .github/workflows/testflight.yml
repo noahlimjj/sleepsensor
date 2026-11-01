@@ -109,7 +109,7 @@ jobs:
           printf '%s\n' "$P" > "$RUNNER_TEMP/keys/AuthKey_$K.p8"
           echo "KEY_PATH=$RUNNER_TEMP/keys/AuthKey_$K.p8" >> "$GITHUB_ENV"
 
-          BUILD_NUM=$((7 + GITHUB_RUN_NUMBER))
+          BUILD_NUM=$((10 + GITHUB_RUN_NUMBER))
           echo "Setting CURRENT_PROJECT_VERSION to $BUILD_NUM"
           sed -i '' "s/CURRENT_PROJECT_VERSION = [0-9]*;/CURRENT_PROJECT_VERSION = $BUILD_NUM;/" ios/App/App.xcodeproj/project.pbxproj
 

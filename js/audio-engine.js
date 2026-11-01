@@ -300,11 +300,23 @@ export class AudioEngine {
     if (this._recording) return this.session;
     this._setStatus('requesting');
 
-    // 1. microphone FIRST — before any await that could break the user-gesture
-    //    chain on iOS Safari (a common cause of a false "permission denied").
+    // 1. Synchronously initialise AudioContext and kick off resume within the
+    //    active user gesture (tap/click), preventing iOS WebKit autoplay blocks.
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!this.audioContext || this.audioContext.state === 'closed') {
+      this.audioContext = new Ctx();
+      this.audioContext.addEventListener('statechange', this._onCtxStateChange);
+    }
+    const resumePromise = this.audioContext.state === 'suspended'
+      ? this.audioContext.resume().catch((e) => console.warn('[AudioEngine] initial resume warning:', e))
+      : Promise.resolve();
+
+    // In the SAME synchronous turn of the user gesture, request the microphone.
+    const micPromise = openMicrophone();
+
     let stream;
     try {
-      stream = await openMicrophone();
+      stream = await micPromise;
     } catch (err) {
       const info = describeMicError(err);
       this._setStatus('error', info.message, info);
@@ -315,15 +327,28 @@ export class AudioEngine {
     this.mediaStream = stream;
 
     try {
-      // 2. audio graph at the device's native rate (forcing 16 kHz throws on
-      //    some iOS versions); the worklet reads the real rate at runtime.
-      const Ctx = window.AudioContext || window.webkitAudioContext;
-      this.audioContext = new Ctx();
-      this.audioContext.addEventListener('statechange', this._onCtxStateChange);
-      if (this.audioContext.state === 'suspended') await this.audioContext.resume();
+      // 2. Wait for AudioContext resume and build the audio graph
+      await resumePromise;
+      if (this.audioContext.state === 'suspended') {
+        await this.audioContext.resume().catch(() => {});
+      }
 
+      // Load worklet processor; fall back to Blob URL if WKWebView scheme denies direct URL
       const workletUrl = new URL('./audio-worklet-processor.js', import.meta.url);
-      await this.audioContext.audioWorklet.addModule(workletUrl);
+      try {
+        await this.audioContext.audioWorklet.addModule(workletUrl.href);
+      } catch (workletErr) {
+        console.warn('[AudioEngine] direct addModule failed, trying blob URL fallback:', workletErr);
+        const resp = await fetch(workletUrl.href);
+        const text = await resp.text();
+        const blob = new Blob([text], { type: 'application/javascript; charset=utf-8' });
+        const blobUrl = URL.createObjectURL(blob);
+        try {
+          await this.audioContext.audioWorklet.addModule(blobUrl);
+        } finally {
+          URL.revokeObjectURL(blobUrl);
+        }
+      }
 
       this.sourceNode = this.audioContext.createMediaStreamSource(this.mediaStream);
       this.workletNode = new AudioWorkletNode(this.audioContext, 'sleep-audio-processor');

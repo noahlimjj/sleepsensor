@@ -9,19 +9,14 @@ import MediaPlayer
  * iOS lets an app keep running in the background only while it is actively
  * using audio and declares UIBackgroundModes = ["audio"]. We hold an active
  * AVAudioSession (.playAndRecord) and keep a silent buffer looping through
- * AVAudioEngine, so the WebView's own getUserMedia + AudioWorklet continue to
+ * AVAudioPlayer, so the WebView's own getUserMedia + AudioWorklet continue to
  * run and process audio all night. Interruptions (calls, alarms, Siri, another
  * app grabbing the mic) are forwarded to JS so the engine can resume.
- *
- * Copy this file + BackgroundRecorder.m into ios/App/App/ after `npx cap add ios`.
- * Add to Info.plist:  NSMicrophoneUsageDescription,  UIBackgroundModes -> audio
  */
 @objc(BackgroundRecorder)
 public class BackgroundRecorder: CAPPlugin {
 
-    private let engine = AVAudioEngine()
-    private var player: AVAudioPlayerNode?
-    private var silentBuffer: AVAudioPCMBuffer?
+    private var player: AVAudioPlayer?
     private var running = false
 
     override public func load() {
@@ -65,11 +60,15 @@ public class BackgroundRecorder: CAPPlugin {
                                         mode: .default,
                                         options: [.mixWithOthers, .allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker])
                 try session.setActive(true, options: [])
-                try self.startSilentLoop()
+                self.startSilentLoop()
                 self.running = true
                 call.resolve(["started": true])
             } catch {
-                call.reject("audio session: \(error.localizedDescription)")
+                // Non-fatal fallback: still attempt to start silent player and resolve
+                print("[BackgroundRecorder] AudioSession setup warning: \(error.localizedDescription)")
+                self.startSilentLoop()
+                self.running = true
+                call.resolve(["started": true, "warning": error.localizedDescription])
             }
         }
     }
@@ -93,48 +92,54 @@ public class BackgroundRecorder: CAPPlugin {
     @objc func isBatteryOptimizationExempt(_ call: CAPPluginCall) { call.resolve(["exempt": true]) }
     @objc func requestBatteryOptimizationExemption(_ call: CAPPluginCall) { call.resolve(["exempt": true]) }
 
-    // MARK: - Silent keep-alive
+    // MARK: - Silent keep-alive (AVAudioPlayer loop)
 
-    private func startSilentLoop() throws {
-        stopSilentLoop()
-        let outFmt = engine.outputNode.inputFormat(forBus: 0)
-        let fmt: AVAudioFormat
-        if outFmt.sampleRate > 0 && outFmt.channelCount > 0 {
-            fmt = outFmt
-        } else if let fallback = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1) {
-            fmt = fallback
-        } else {
-            return
-        }
+    private func makeSilentWavData() -> Data {
+        let sampleRate: UInt32 = 44100
+        let numChannels: UInt16 = 1
+        let bitsPerSample: UInt16 = 16
+        let byteRate: UInt32 = sampleRate * UInt32(numChannels) * UInt32(bitsPerSample / 8)
+        let blockAlign: UInt16 = numChannels * (bitsPerSample / 8)
+        let numSamples: UInt32 = sampleRate // 1 second of silence
+        let dataSize: UInt32 = numSamples * UInt32(blockAlign)
+        let chunkSize: UInt32 = 36 + dataSize
 
-        let node = AVAudioPlayerNode()
-        engine.attach(node)
-        engine.connect(node, to: engine.mainMixerNode, format: fmt)
-
-        let frames = max(AVAudioFrameCount(fmt.sampleRate), 44100) // ~1 second
-        guard let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: frames) else { return }
-        buf.frameLength = frames // zeroed => silence
-        self.silentBuffer = buf
-        self.player = node
-
-        if !engine.isRunning { try engine.start() }
-        node.play()
-        scheduleSilence()
+        var data = Data()
+        data.append(contentsOf: "RIFF".utf8)
+        var cs = chunkSize.littleEndian; data.append(Data(bytes: &cs, count: 4))
+        data.append(contentsOf: "WAVE".utf8)
+        data.append(contentsOf: "fmt ".utf8)
+        var subchunk1Size: UInt32 = 16; var sc1 = subchunk1Size.littleEndian; data.append(Data(bytes: &sc1, count: 4))
+        var audioFormat: UInt16 = 1; var af = audioFormat.littleEndian; data.append(Data(bytes: &af, count: 2))
+        var nc = numChannels.littleEndian; data.append(Data(bytes: &nc, count: 2))
+        var sr = sampleRate.littleEndian; data.append(Data(bytes: &sr, count: 4))
+        var br = byteRate.littleEndian; data.append(Data(bytes: &br, count: 4))
+        var ba = blockAlign.littleEndian; data.append(Data(bytes: &ba, count: 2))
+        var bps = bitsPerSample.littleEndian; data.append(Data(bytes: &bps, count: 2))
+        data.append(contentsOf: "data".utf8)
+        var ds = dataSize.littleEndian; data.append(Data(bytes: &ds, count: 4))
+        data.append(Data(count: Int(dataSize))) // all zeroes = pure silence
+        return data
     }
 
-    private func scheduleSilence() {
-        guard let node = player, let buf = silentBuffer else { return }
-        node.scheduleBuffer(buf, at: nil, options: [.loops], completionHandler: nil)
+    private func startSilentLoop() {
+        stopSilentLoop()
+        do {
+            let wavData = makeSilentWavData()
+            let p = try AVAudioPlayer(data: wavData)
+            p.numberOfLoops = -1 // loop indefinitely
+            p.volume = 0.0      // silent
+            p.prepareToPlay()
+            p.play()
+            self.player = p
+        } catch {
+            print("[BackgroundRecorder] Failed to create silent AVAudioPlayer: \(error.localizedDescription)")
+        }
     }
 
     private func stopSilentLoop() {
         player?.stop()
-        if engine.isRunning { engine.stop() }
-        if let node = player {
-            engine.detach(node)
-        }
         player = nil
-        silentBuffer = nil
     }
 
     // MARK: - Notifications -> JS
@@ -144,11 +149,12 @@ public class BackgroundRecorder: CAPPlugin {
               let raw = info[AVAudioSessionInterruptionTypeKey] as? UInt,
               let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
         if type == .began {
+            player?.pause()
             notifyListeners("interruptionBegan", data: [:])
         } else {
             // try to reactivate and tell JS to resume
             try? AVAudioSession.sharedInstance().setActive(true, options: [])
-            if let node = player, !node.isPlaying { node.play(); scheduleSilence() }
+            player?.play()
             notifyListeners("interruptionEnded", data: [:])
         }
     }
@@ -172,7 +178,7 @@ public class BackgroundRecorder: CAPPlugin {
         // the whole audio stack was reset by the OS — rebuild and tell JS
         stopSilentLoop()
         if running {
-            try? startSilentLoop()
+            startSilentLoop()
             notifyListeners("interruptionEnded", data: ["reason": "media-reset"])
         }
     }
