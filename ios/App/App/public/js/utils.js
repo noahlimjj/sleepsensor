@@ -166,6 +166,18 @@ export function lerp(a, b, t) {
 }
 
 /**
+ * Map a peak to a 0-1 waveform bar height on a dB scale, auto-scaled so the
+ * loudest recent peak fills the display. The -36 dB limit stops a silent room
+ * being blown up to full height; -55 dB is about where room hiss sits.
+ */
+export function waveformLevel(peak, loudest) {
+  const toDb = (v) => 20 * Math.log10(Math.max(v || 0, 1e-7));
+  const top = Math.max(toDb(loudest), -36);
+  const bottom = Math.max(-55, top - 35);
+  return clamp((toDb(peak) - bottom) / (top - bottom), 0, 1) ** 1.2;
+}
+
+/**
  * Trace a rounded rectangle path, clamping every value so a canvas that is
  * momentarily 0-sized (hidden screen) can never throw "Radius value is negative".
  * Returns false if the rect has no area (caller should skip the fill/stroke).

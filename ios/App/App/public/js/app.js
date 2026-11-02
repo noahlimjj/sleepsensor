@@ -3,7 +3,7 @@
    Handles screen routing, UI state, and wires everything together
    ============================================================ */
 
-import { formatDuration, formatTimer, formatTime, formatDate, formatBytes, toDateKey, getMonthAbbr, getDayOfMonth, throttle, toPercent, roundRectPath } from './utils.js';
+import { formatDuration, formatTimer, formatTime, formatDate, formatBytes, toDateKey, getMonthAbbr, getDayOfMonth, toPercent, roundRectPath, waveformLevel } from './utils.js';
 import { Timeline } from './timeline.js';
 import { ApneaDetector } from './apnea-detector.js';
 import { DonutChart, TrendChart } from './charts.js';
@@ -57,6 +57,9 @@ class App {
     // Waveform animation
     this.waveformData = new Float32Array(128).fill(0);
     this.waveformAnimId = null;
+    this._barPeak = 0;
+    this._barStart = 0;
+    this._waveTop = 0;
   }
 
   async init() {
@@ -101,7 +104,7 @@ class App {
       this.engine = new AudioEngine({
         classifier: this.classifier,
         storage: this.storage,
-        onEnergy: throttle((rms) => this._onEnergy(rms), 16),
+        onEnergy: (rms, db, peak) => this._onEnergy(peak),
         onEvent: (event) => this._onEvent(event),
         onStatusChange: (status, info, extra) => this._onStatusChange(status, info, extra),
       });
@@ -535,10 +538,16 @@ class App {
 
   // ========== WAVEFORM ==========
 
-  _onEnergy(rms) {
+  _onEnergy(peak) {
+    // One bar per 50 ms holding the loudest sample in it, like a voice recorder
+    this._barPeak = Math.max(this._barPeak, peak);
+    const now = performance.now();
+    if (now - this._barStart < 50) return;
     // Shift waveform data left and push new value
     this.waveformData.copyWithin(0, 1);
-    this.waveformData[this.waveformData.length - 1] = rms;
+    this.waveformData[this.waveformData.length - 1] = this._barPeak;
+    this._barPeak = 0;
+    this._barStart = now;
   }
 
   _startWaveformAnimation() {
@@ -579,11 +588,14 @@ class App {
       ctx.lineTo(w, centerY);
       ctx.stroke();
 
+      // Scale to the loudest bar on screen, easing back down once it scrolls off
+      const loudest = data.reduce((a, b) => Math.max(a, b), 0);
+      this._waveTop = loudest >= this._waveTop ? loudest : this._waveTop + (loudest - this._waveTop) * 0.03;
+
       // Bars
       ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
       for (let i = 0; i < barCount; i++) {
-        const amplitude = Math.min(data[i] * 8, 1);
-        const barH = Math.max(2, amplitude * (h * 0.4));
+        const barH = Math.max(2, waveformLevel(data[i], this._waveTop) * (h * 0.47));
         ctx.beginPath();
         if (roundRectPath(ctx, i * barWidth + 1, centerY - barH, Math.max(1, barWidth - 2), barH * 2, 3)) {
           ctx.fill();
@@ -615,6 +627,8 @@ class App {
       this._waveformResize = null;
     }
     this.waveformData.fill(0);
+    this._barPeak = 0;
+    this._waveTop = 0;
   }
 
   // ========== EVENTS ==========

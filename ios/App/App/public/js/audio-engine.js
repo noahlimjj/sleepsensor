@@ -7,7 +7,7 @@
  *
  *   const engine = new AudioEngine({
  *     classifier, storage,
- *     onEnergy:       (rms) => {},
+ *     onEnergy:       (rms, db, peak) => {},
  *     onEvent:        (event) => {},   // { type:'snoring'|'bruxism'|'noise'|'apnea', ... }
  *     onStatusChange: (status, info) => {},
  *   });
@@ -580,7 +580,7 @@ export class AudioEngine {
         const sq = msg.laf * msg.laf;
         this._calMeanSq = this._calMeanSq ? this._calMeanSq + 0.0027 * (sq - this._calMeanSq) : sq; // ~2 s at ~187 Hz
       }
-      this.onEnergy(msg.rms, dbFS(msg.rms));
+      this.onEnergy(msg.rms, dbFS(msg.rms), this._lastPeak);
       return;
     }
     this._lastAudioAt = Date.now();

@@ -267,7 +267,7 @@ a {
 /* ========== RECORDING SCREEN ========== */
 .waveform-container {
   position: relative;
-  height: 140px;
+  height: 180px;
   margin: 0 -16px;
   background: var(--dark);
   border-top: var(--border);
