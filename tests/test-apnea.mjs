@@ -1,115 +1,118 @@
-// apnea-detector.js — snore → pause → arousal state machine and AHI metrics.
-import { section, ok, eq, approx } from './lib.mjs';
-import { ApneaDetector, classifyArousalAcoustics } from '../js/apnea-detector.js';
+// apnea-detector.js — breathing-band dip → recovery detector and AHI metrics.
+import { section, ok, eq } from './lib.mjs';
+import { ApneaDetector, BreathPauseTracker, breathProbability } from '../js/apnea-detector.js';
 
-// feed a scripted night: each step is [type, rms, zcr?]; windows are 2 s apart
-function play(det, steps, t0 = 0) {
+// --- synthetic breathing-band envelopes (dBFS per 100 ms) ---
+const FLOOR = -70;
+let seed = 7;
+const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff) * 2 - 1;
+const quiet = (sec) => Array.from({ length: sec * 10 }, () => FLOOR + rnd() * 0.4);
+// breaths: 1.2 s of sound every `period` s
+function breathing(sec, level = -58, period = 4) {
+  const out = quiet(sec);
+  for (let t = 0; t + 1.2 <= sec; t += period) for (let i = 0; i < 12; i++) out[Math.round(t * 10) + i] = level + rnd();
+  return out;
+}
+// one obstructive cycle: 30 s of breathing, a silent pause, three loud recovery breaths
+const cycle = (pauseSec = 20) => [...breathing(30), ...quiet(pauseSec), ...breathing(9, -48, 3)];
+
+// play an envelope through the detector as 2 s worklet windows
+function play(det, env, { t0 = 0, type = 'other', typeAt = null } = {}) {
   const out = [];
   let wall = t0;
-  for (const [type, rms, zcr = 0.05] of steps) {
+  for (let i = 0; i + 20 <= env.length; i += 20) {
     wall += 2000;
-    const conf = type === 'snoring' || type === 'noise' ? 0.8 : type === 'quiet' ? 0.9 : 1;
-    const ev = det.feed({ type, confidence: conf }, { rms, peak: rms * 2, zcr }, wall);
+    const res = typeAt ? typeAt(wall - t0) : { type, confidence: 0.8 };
+    const ev = det.feed(res, { breath: env.slice(i, i + 20), rms: 0.01, peak: 0.05, zcr: 0.05 }, wall);
     if (ev) out.push(ev);
   }
   return out;
 }
-const rep = (n, step) => Array.from({ length: n }, () => step);
-const SNORE = ['snoring', 0.1];
-const SILENT = ['silence', 0.0008];
 
 export function run() {
   section('apnea-detector.js — breathing pauses & estimated AHI');
 
-  // --- classic cycle: snoring, 14 s pause, loud snort ---
+  // --- steady breathing all night long is not an apnea ---
   {
     const det = new ApneaDetector();
-    const evs = play(det, [...rep(4, SNORE), ...rep(7, SILENT), ['snoring', 0.15], SNORE]);
-    eq(evs.length, 1, 'one apnea detected for snore → 14 s pause → snort');
-    const e = evs[0];
+    eq(play(det, breathing(900)).length, 0, '15 min of regular breathing → no pauses');
+    eq(det.state, 'listening', 'detector is listening once sound arrives');
+  }
+
+  // --- a silent room is not an apnea either ---
+  {
+    const det = new ApneaDetector();
+    eq(play(det, quiet(900)).length, 0, '15 min of room noise → no pauses');
+  }
+
+  // --- repeated pause → recovery cycles are found, timed and described ---
+  {
+    const det = new ApneaDetector();
+    const env = [...breathing(60), ...Array.from({ length: 8 }, () => cycle(20)).flat(), ...breathing(60)];
+    const evs = play(det, env);
+    ok(evs.length >= 6 && evs.length <= 9, `8 cycles → about 8 pauses (${evs.length})`);
+    eq(det.events.length, evs.length, 'detector keeps the night list');
+    const e = evs[1];
     eq(e.type, 'apnea', 'event type apnea');
-    eq(e.duration, 14, 'pause duration measured from last snore to resumption');
-    eq(e.startTime, 8000, 'pause starts when snoring stops');
-    eq(e.endTime, 22000, 'pause ends when the snort begins');
-    eq(e.arousal, 'snort', 'resumption by snoring is a snort');
-    ok(e.confidence > 0.5 && e.confidence <= 0.95, `confidence in range (${e.confidence})`);
-    eq(e.severity, 'mild', '14 s pause is mild');
-  }
-
-  // --- a gasp (broadband noise) also ends a pause ---
-  {
-    const det = new ApneaDetector();
-    const evs = play(det, [...rep(5, SNORE), ...rep(10, SILENT), ['noise', 0.2, 0.3]]);
-    eq(evs.length, 1, 'gasp-terminated pause detected');
-    eq(evs[0].arousal, 'gasp', 'high-ZCR resumption classified as gasp');
-    eq(evs[0].duration, 20, '20 s pause');
-    eq(evs[0].severity, 'moderate', '20 s pause is moderate');
-  }
-
-  // --- pauses shorter than 10 s are normal breathing between snores ---
-  {
-    const det = new ApneaDetector();
-    const evs = play(det, [...rep(4, SNORE), ...rep(4, SILENT), ...rep(3, SNORE), ...rep(2, SILENT), SNORE]);
-    eq(evs.length, 0, '8 s and 4 s gaps are not apneas');
-    eq(det.state, 'snoring', 'the snore run continues through short gaps');
-  }
-
-  // --- no preceding snoring → no apnea ---
-  {
-    const det = new ApneaDetector();
-    const evs = play(det, [...rep(10, SILENT), ['snoring', 0.15], SNORE]);
-    eq(evs.length, 0, 'silence then snoring alone is not an apnea');
-  }
-
-  // --- a single snore window is too short a run ---
-  {
-    const det = new ApneaDetector();
-    const evs = play(det, [SNORE, ...rep(8, SILENT), ['snoring', 0.15]]);
-    eq(evs.length, 0, 'a 2 s snore does not arm the detector');
-  }
-
-  // --- quiet stretches longer than 90 s are quiet sleep, not a pause ---
-  {
-    const det = new ApneaDetector();
-    const evs = play(det, [...rep(4, SNORE), ...rep(50, SILENT), ['snoring', 0.15]]);
-    eq(evs.length, 0, '100 s of silence is not counted as an apnea');
-  }
-
-  // --- a soft resumption (no arousal) is not counted ---
-  {
-    const det = new ApneaDetector();
-    const evs = play(det, [...rep(4, SNORE), ...rep(7, ['silence', 0.004]), ['noise', 0.008]]);
-    eq(evs.length, 0, 'a faint rustle after silence is not an arousal');
-  }
-
-  // --- talking interrupts the cycle ---
-  {
-    const det = new ApneaDetector();
-    const evs = play(det, [...rep(4, SNORE), ['noise', 0.1], ...rep(7, SILENT), ['snoring', 0.15]]);
-    eq(evs.length, 0, 'loud non-snore sound right after snoring resets the cycle');
-  }
-
-  // --- cyclic pattern: repeated events, events list kept, reset clears ---
-  {
-    const det = new ApneaDetector();
-    const cycle = [...rep(4, SNORE), ...rep(6, SILENT), ['snoring', 0.15]];
-    const evs = play(det, [...cycle, ...cycle, ...cycle]);
-    eq(evs.length, 3, 'three cycles → three apneas');
-    eq(det.events.length, 3, 'detector keeps the night list');
+    ok(e.duration >= 15 && e.duration <= 25, `20 s pause measured (${e.duration})`);
+    eq(e.severity, 'moderate', '20 s pause is moderate');
+    ok(e.confidence > 0.29 && e.confidence <= 0.95, `confidence in range (${e.confidence})`);
+    ok(e.arousalJumpDb >= 4, `recovery jump reported (${e.arousalJumpDb} dB)`);
+    // cycle k recovers at 60 + 59k + 50 s
+    const expected = [1, 2, 3, 4, 5, 6, 7].map((k) => (60 + 59 * k + 50) * 1000);
+    ok(expected.some((t) => Math.abs(e.endTime - t) <= 4000), `pause ends when breathing returns (${e.endTime})`);
+    eq(e.endTime - e.startTime, e.duration * 1000, 'start/end consistent with duration');
     det.reset();
     eq(det.events.length, 0, 'reset clears events');
     eq(det.state, 'idle', 'reset returns to idle');
   }
 
-  // --- arousal acoustics ---
+  // --- the recovery sound is described from the classifier's verdict ---
   {
-    const a = classifyArousalAcoustics({ rms: 0.1, zcr: 0.3, type: 'noise', confidence: 0.7 }, 0.001, 0.1);
-    ok(a.isArousal && a.kind === 'gasp', 'wideband loud burst → gasp');
-    approx(a.jumpDb, 40, 0.1, 'jump measured against the pause floor');
-    const b = classifyArousalAcoustics({ rms: 0.02, zcr: 0.05, type: 'other' }, 0.001, 0.1);
-    ok(!b.isArousal, 'a jump that stays well below the snoring level is not an arousal');
-    const c = classifyArousalAcoustics({ rms: 0.1, type: 'noise' }, 0.05, 0.1);
-    ok(!c.isArousal, 'a < 10 dB jump is not an arousal');
+    const det = new ApneaDetector();
+    const env = [...breathing(60), ...Array.from({ length: 4 }, () => cycle(20)).flat(), ...breathing(60)];
+    const evs = play(det, env, { type: 'snoring' });
+    ok(evs.length > 0 && evs.every((x) => x.arousal === 'snort'), 'snoring at the recovery → snort');
+    const det2 = new ApneaDetector();
+    const evs2 = play(det2, env, { type: 'other' });
+    ok(evs2.length > 0 && evs2.every((x) => x.arousal === 'arousal'), 'unclassified recovery → plain arousal');
+  }
+
+  // --- short gaps between breaths are normal ---
+  {
+    const det = new ApneaDetector();
+    const env = [...breathing(60), ...Array.from({ length: 12 }, () => [...breathing(30), ...quiet(6)]).flat()];
+    eq(play(det, env).length, 0, 'a skipped breath (6 s more silence) is not counted');
+  }
+
+  // --- windows without the breathing band (older worklet) are ignored ---
+  {
+    const det = new ApneaDetector();
+    eq(det.feed({ type: 'snoring', confidence: 0.9 }, { rms: 0.1 }, 2000), null, 'no breath frames → null');
+    eq(det.state, 'idle', '... and the detector stays idle');
+  }
+
+  // --- a hole in the audio restarts listening instead of faking a pause ---
+  {
+    const det = new ApneaDetector();
+    play(det, breathing(120));
+    const evs = play(det, breathing(120, -48, 3), { t0: 120000 + 600000 });
+    eq(evs.length, 0, 'louder breathing after a 10 min interruption is not a recovery');
+  }
+
+  // --- tracker bookkeeping stays bounded over a long night ---
+  {
+    const tr = new BreathPauseTracker();
+    for (let i = 0; i < 40; i++) tr.push(breathing(60));
+    ok(tr.pw.length <= 200 && tr.jumps.size <= 260, `rolling state stays small (${tr.pw.length} s, ${tr.jumps.size} rows)`);
+  }
+
+  // --- the scoring model prefers a long silent gap with a big recovery ---
+  {
+    const strong = { jump: 14, drop: 6, lPause: 0.2, near: 3, gap: 22, preAct: 9, postAct: 8 };
+    const weak = { jump: 4.5, drop: 0, lPause: 4, near: 0, gap: 0, preAct: 25, postAct: 28 };
+    ok(breathProbability(strong) > 0.6, `clear apnea shape scores high (${breathProbability(strong).toFixed(2)})`);
+    ok(breathProbability(weak) < 0.2, `a blip in continuous sound scores low (${breathProbability(weak).toFixed(2)})`);
   }
 
   // --- AHI metrics, tiers and bruxism correlation ---

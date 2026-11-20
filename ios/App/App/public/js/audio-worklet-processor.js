@@ -278,6 +278,65 @@ function createLevelMeter(fs) {
   };
 }
 
+/**
+ * Breathing-band level meter. Room rumble (air-con, traffic, the mic's own
+ * hum) sits below a few hundred Hz and swamps the plain level, while breath
+ * and snore noise still stands out between 1 and 4 kHz. This band-passes the
+ * 16 kHz stream (4th-order Butterworth each side) and reports the level of
+ * every 100 ms frame in dBFS, which is what the breathing-pause detector reads.
+ */
+function createBreathMeter(fs = 16000, lowHz = 1000, highHz = 4000, frameSec = 0.1) {
+  const biquad = (type, fc, q) => {
+    const w = (2 * Math.PI * fc) / fs;
+    const c = Math.cos(w);
+    const a = Math.sin(w) / (2 * q);
+    const a0 = 1 + a;
+    const b = type === 'hp' ? [(1 + c) / 2, -(1 + c), (1 + c) / 2] : [(1 - c) / 2, 1 - c, (1 - c) / 2];
+    return [b[0] / a0, b[1] / a0, b[2] / a0, (-2 * c) / a0, (1 - a) / a0];
+  };
+  // Butterworth 4th order = two biquads with Q 0.5412 and 1.3066
+  const secs = [
+    biquad('hp', lowHz, 0.5412),
+    biquad('hp', lowHz, 1.3066),
+    biquad('lp', highHz, 0.5412),
+    biquad('lp', highHz, 1.3066),
+  ];
+  const st = new Float64Array(secs.length * 4); // x1, x2, y1, y2 per section
+  const frame = Math.round(fs * frameSec);
+  let acc = 0;
+  let n = 0;
+  let out = [];
+  return {
+    process(buf) {
+      for (let i = 0; i < buf.length; i++) {
+        let v = buf[i];
+        for (let k = 0; k < secs.length; k++) {
+          const c = secs[k];
+          const o = k * 4;
+          const y = c[0] * v + c[1] * st[o] + c[2] * st[o + 1] - c[3] * st[o + 2] - c[4] * st[o + 3];
+          st[o + 1] = st[o];
+          st[o] = v;
+          st[o + 3] = st[o + 2];
+          st[o + 2] = y;
+          v = y;
+        }
+        acc += v * v;
+        if (++n === frame) {
+          out.push(Math.round(100 * Math.log10(Math.max(acc / frame, 1e-12))) / 10);
+          acc = 0;
+          n = 0;
+        }
+      }
+    },
+    /** frames (dBFS, one per 100 ms) since the last call */
+    take() {
+      const r = out;
+      out = [];
+      return r;
+    },
+  };
+}
+
 // zero-crossing rate — high for noise/grinding, low for tonal snoring
 function zcr(buf) {
   let c = 0;
@@ -298,7 +357,7 @@ if (typeof registerProcessor !== 'undefined' && typeof AudioWorkletProcessor !==
   const NATIVE_SR = typeof sampleRate !== 'undefined' ? sampleRate : 16000;
   const SR = 16000;
   const WINDOW_SAMPLES = SR * 2; // 2 second classification window
-  const ROLLING_SECONDS = 30;
+  const ROLLING_SECONDS = 60; // breathing pauses are confirmed ~30 s late and still need their clip
   const ROLLING_SAMPLES = SR * ROLLING_SECONDS;
   const NUM_MEL = 128;
   const TIME_STEPS = 64;
@@ -327,6 +386,7 @@ if (typeof registerProcessor !== 'undefined' && typeof AudioWorkletProcessor !==
       this._meterFastMax = 0; // ... since the last meter post
 
       this.frameCounter = 0;
+      this.breath = createBreathMeter(SR);
 
       // linear resampler state
       this._rsRatio = NATIVE_SR / SR;
@@ -408,8 +468,9 @@ if (typeof registerProcessor !== 'undefined' && typeof AudioWorkletProcessor !==
       this._aSum = 0;
       this._aN = 0;
       this._aFastMax = 0;
+      const breath = this.breath.take(); // 1–4 kHz level per 100 ms, for breathing pauses
       if (active < this.threshold) {
-        this.port.postMessage({ type: 'silence', timestamp, rms: energy, activeRms: active, quietRms: quiet, peak, zcr: zc, laeq, lafMax });
+        this.port.postMessage({ type: 'silence', timestamp, rms: energy, activeRms: active, quietRms: quiet, peak, zcr: zc, laeq, lafMax, breath });
       } else {
         const spec = melSpectrogram(this.window, {
           fftSize: FFT_SIZE,
@@ -420,7 +481,7 @@ if (typeof registerProcessor !== 'undefined' && typeof AudioWorkletProcessor !==
           melFb: this.melFb,
         });
         this.port.postMessage(
-          { type: 'spectrogram', data: spec, timestamp, rms: energy, activeRms: active, quietRms: quiet, peak, zcr: zc, laeq, lafMax },
+          { type: 'spectrogram', data: spec, timestamp, rms: energy, activeRms: active, quietRms: quiet, peak, zcr: zc, laeq, lafMax, breath },
           [spec.buffer]
         );
       }
@@ -439,6 +500,7 @@ if (typeof registerProcessor !== 'undefined' && typeof AudioWorkletProcessor !==
       if (chan.length === 0) return true;
 
       this._writeRolling(chan);
+      this.breath.process(chan);
 
       // per-frame level for the live meter (~62 Hz, every other render quantum)
       this.frameCounter++;
@@ -488,6 +550,7 @@ if (typeof module !== 'undefined' && module.exports) {
     quietFrameRms,
     aWeightingSections,
     createLevelMeter,
+    createBreathMeter,
     zcr,
   };
 }

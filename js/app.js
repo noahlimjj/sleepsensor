@@ -674,7 +674,7 @@ class App {
     }
 
     if (event.type === 'apnea') {
-      confEl.textContent = `${Math.round(event.duration || 0)}s, then ${event.arousal === 'gasp' ? 'a gasp' : 'a snort'}`;
+      confEl.textContent = `${Math.round(event.duration || 0)}s, then ${event.arousal === 'gasp' ? 'a gasp' : event.arousal === 'snort' ? 'a snort' : 'breathing resumed'}`;
     } else if (event.type === 'noise') {
       confEl.textContent = loudnessLabel(event);
     } else {

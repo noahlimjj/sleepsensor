@@ -102,6 +102,27 @@ export function run() {
     ok(dsp.zcr(lo) > 0 && dsp.zcr(hi) < 1, 'zcr stays within (0,1)');
   }
 
+  // --- breathing-band meter: 1–4 kHz passes, rumble is rejected, 10 frames/s ---
+  {
+    const sr = 16000;
+    const tone = (hz, amp) => Float32Array.from({ length: sr * 2 }, (_, i) => amp * Math.sin((2 * Math.PI * hz * i) / sr));
+    const level = (buf) => {
+      const m = dsp.createBreathMeter(sr);
+      // fed in render-quantum sized pieces, like the audio thread does
+      for (let i = 0; i < buf.length; i += 128) m.process(buf.subarray(i, i + 128));
+      const f = m.take();
+      return { n: f.length, last: f[f.length - 1], again: m.take().length };
+    };
+    const mid = level(tone(2000, 0.1));
+    eq(mid.n, 20, 'one level per 100 ms (20 per 2 s window)');
+    eq(mid.again, 0, 'take() hands the frames over once');
+    approx(mid.last, -23, 0.5, '2 kHz tone at 0.1 reads its RMS level (-23 dBFS)');
+    ok(level(tone(60, 0.5)).last < -90, 'loud 60 Hz hum is rejected');
+    ok(level(tone(200, 0.5)).last < -55, '200 Hz rumble is at least 45 dB down');
+    ok(level(tone(7000, 0.1)).last < -40, '7 kHz hiss is attenuated');
+    eq(level(new Float32Array(sr * 2)).last, -120, 'digital silence reads the -120 dB floor');
+  }
+
   pass('DSP module behaves correctly');
 }
 

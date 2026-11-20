@@ -91,7 +91,7 @@ const HIGHLIGHT_PAD_SEC = 3;
 
 // breathing-pause clips: the tail of the pause plus the snort/gasp that ends it
 const APNEA_CLIP_LEAD_SEC = 20;
-const APNEA_CLIP_TAIL_SEC = 2; // detection fires right after the arousal window, so no more audio exists yet
+const APNEA_CLIP_TAIL_SEC = 8; // the recovery breaths; detection fires ~30 s later, so this audio exists
 
 // background-resilience watchdog
 const STALL_TIMEOUT_MS = 9000; // no worklet audio for this long => try to recover

@@ -193,30 +193,43 @@ export async function run() {
     eq(calls.events[calls.events.length - 1].type, 'snoring', 'smoothed event type is snoring');
   }
 
-  // --- breathing pause: snoring → silence → snort produces an apnea event,
-  //     stored, tallied, emitted, with a clip covering the pause ---
+  // --- breathing pause: breathing → 20 s of silence → loud recovery breaths
+  //     produces an apnea event: stored, tallied, emitted, with a clip ---
   {
     const { engine, calls } = makeEngine();
-    let verdict = { type: 'snoring', confidence: 0.8, scores: { snoring: 0.8, noise: 0.2 } };
+    engine.classifier.classify = () => ({ type: 'other', confidence: 0.2, scores: {} });
     let t = 0;
-    const spec = (rms) =>
-      engine._onWorkletMessage({ data: { type: 'spectrogram', data: new Float32Array(8), timestamp: (t += 2), rms, peak: rms * 2 } });
-    const silent = () => engine._onWorkletMessage({ data: { type: 'silence', timestamp: (t += 2), rms: 0.0008, peak: 0.002 } });
-    engine.classifier.classify = () => verdict;
+    // breathing-band envelope: one value per 100 ms, breaths of 1.2 s
+    const env = [];
+    const seg = (sec, level, period) => {
+      for (let i = 0; i < sec * 10; i++) env.push(level !== null && i % (period * 10) < 12 ? level : -70);
+    };
+    seg(60, -58, 4);
+    for (let k = 0; k < 4; k++) {
+      seg(30, -58, 4);
+      seg(20, null, 1);
+      seg(9, -48, 3);
+    }
+    seg(60, -58, 4);
+    for (let i = 0; i + 20 <= env.length; i += 20) {
+      engine._onWorkletMessage({
+        data: { type: 'spectrogram', data: new Float32Array(8), timestamp: (t += 2), rms: 0.002, peak: 0.004, breath: env.slice(i, i + 20) },
+      });
+      for (const r of calls.clipReq) r.at ??= t; // when each clip was asked for
+    }
 
-    for (let i = 0; i < 4; i++) spec(0.1);
-    for (let i = 0; i < 7; i++) silent();
-    calls.clipReq.length = 0;
-    spec(0.15); // snort
-
-    const apnea = calls.events.find((e) => e.type === 'apnea');
-    ok(apnea, 'apnea event emitted through onEvent');
-    eq(apnea && apnea.duration, 14, 'emitted pause duration');
-    ok(calls.added.some((e) => e.type === 'apnea' && e.sessionId === 'sess-1' && e.endTime > e.startTime), 'apnea event stored');
-    eq(engine._tally.apneaEvents, 1, 'apnea tallied');
-    eq(engine._tally.apneaDuration, 14, 'pause seconds tallied');
-    const req = calls.clipReq.at(-1); // the snort may also request a loudest-moment clip first
-    ok(req && req.endTime - req.startTime === 16, 'clip spans the pause tail and the arousal');
+    const apneas = calls.events.filter((e) => e.type === 'apnea');
+    ok(apneas.length >= 3 && apneas.length <= 4, `breathing pauses emitted through onEvent (${apneas.length})`);
+    const apnea = apneas[0];
+    ok(apnea && apnea.duration >= 15 && apnea.duration <= 25, `emitted pause duration (${apnea && apnea.duration})`);
+    const stored = calls.added.filter((e) => e.type === 'apnea');
+    ok(stored.length === apneas.length && stored.every((e) => e.sessionId === 'sess-1' && e.endTime > e.startTime), 'apnea events stored');
+    eq(engine._tally.apneaEvents, apneas.length, 'apneas tallied');
+    ok(Math.abs(engine._tally.apneaDuration - apneas.reduce((x, e) => x + e.duration, 0)) < 0.01, 'pause seconds tallied');
+    const first = stored[0];
+    const req = calls.clipReq.find((r) => Math.abs(r.endTime - (first.endTime / 1000 + 8)) < 0.01);
+    ok(req && Math.abs(req.endTime - req.startTime - (Math.min(first.duration, 20) + 8)) < 0.01, 'clip spans the end of the pause and the recovery breaths');
+    ok(req && req.at - req.startTime <= 60, 'the clip still fits in the worklet\'s 60 s rolling buffer when requested late');
   }
 
   // --- live dB meter ---
