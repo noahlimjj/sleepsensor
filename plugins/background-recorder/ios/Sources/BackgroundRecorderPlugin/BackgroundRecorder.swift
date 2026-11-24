@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import AVFoundation
 import Capacitor
 import MediaPlayer
@@ -85,6 +86,100 @@ public class BackgroundRecorder: CAPPlugin {
     @objc func update(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
             call.resolve()
+        }
+    }
+
+    // MARK: - Files: export share sheet + nightly copies in the Files app
+
+    /// `export` = a scratch folder for the share sheet; `nights` = Documents,
+    /// shown in Files → On My iPhone → Sleep Sensor (UIFileSharingEnabled).
+    private func folder(_ kind: String, _ sub: String?) throws -> URL {
+        let fm = FileManager.default
+        var base: URL
+        if kind == "nights" {
+            base = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        } else {
+            base = fm.temporaryDirectory.appendingPathComponent("export", isDirectory: true)
+        }
+        if let sub = sub, !sub.isEmpty { base = base.appendingPathComponent(safeName(sub), isDirectory: true) }
+        try fm.createDirectory(at: base, withIntermediateDirectories: true)
+        return base
+    }
+
+    private func safeName(_ n: String) -> String {
+        let bad = CharacterSet(charactersIn: "/\\:?%*|\"<>")
+        return n.components(separatedBy: bad).joined(separator: "-")
+    }
+
+    /// writeFile({ kind, dir?, name, data (base64), append? })
+    @objc func writeFile(_ call: CAPPluginCall) {
+        guard let name = call.getString("name"), let b64 = call.getString("data"),
+              let data = Data(base64Encoded: b64) else {
+            call.reject("name and base64 data are required"); return
+        }
+        do {
+            let url = try folder(call.getString("kind") ?? "export", call.getString("dir")).appendingPathComponent(safeName(name))
+            if call.getBool("append") ?? false, FileManager.default.fileExists(atPath: url.path) {
+                let h = try FileHandle(forWritingTo: url)
+                h.seekToEndOfFile()
+                h.write(data)
+                h.closeFile()
+            } else {
+                try data.write(to: url, options: .atomic)
+            }
+            call.resolve(["path": url.path])
+        } catch {
+            call.reject("write failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// clearFiles({ kind, dir? }) — empties the export scratch folder (or one night)
+    @objc func clearFiles(_ call: CAPPluginCall) {
+        do {
+            let url = try folder(call.getString("kind") ?? "export", call.getString("dir"))
+            try? FileManager.default.removeItem(at: url)
+            call.resolve()
+        } catch {
+            call.resolve()
+        }
+    }
+
+    /// listDirs({ kind }) -> { dirs: [String] } (nights folder housekeeping)
+    @objc func listDirs(_ call: CAPPluginCall) {
+        do {
+            let url = try folder(call.getString("kind") ?? "nights", nil)
+            let items = try FileManager.default.contentsOfDirectory(atPath: url.path)
+            call.resolve(["dirs": items.sorted()])
+        } catch {
+            call.resolve(["dirs": []])
+        }
+    }
+
+    /// shareFiles({ kind, dir?, names: [String] }) — native share sheet
+    /// (AirDrop, Save to Files, Telegram, Mail …)
+    @objc func shareFiles(_ call: CAPPluginCall) {
+        let names = call.getArray("names", String.self) ?? []
+        do {
+            let dir = try folder(call.getString("kind") ?? "export", call.getString("dir"))
+            let urls = names.map { dir.appendingPathComponent(safeName($0)) }
+                .filter { FileManager.default.fileExists(atPath: $0.path) }
+            if urls.isEmpty { call.reject("no files to share"); return }
+            DispatchQueue.main.async {
+                guard let vc = self.bridge?.viewController else { call.reject("no view controller"); return }
+                let sheet = UIActivityViewController(activityItems: urls, applicationActivities: nil)
+                if let pop = sheet.popoverPresentationController {
+                    pop.sourceView = vc.view
+                    pop.sourceRect = CGRect(x: vc.view.bounds.midX, y: vc.view.bounds.midY, width: 1, height: 1)
+                    pop.permittedArrowDirections = []
+                }
+                sheet.completionWithItemsHandler = { activity, completed, _, error in
+                    if let error = error { call.reject(error.localizedDescription); return }
+                    call.resolve(["completed": completed, "activity": activity?.rawValue ?? ""])
+                }
+                vc.present(sheet, animated: true)
+            }
+        } catch {
+            call.reject("share failed: \(error.localizedDescription)")
         }
     }
 

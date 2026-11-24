@@ -109,6 +109,23 @@ export class NativeBridge {
     }
   }
 
+  /** True when the native shell can write files and show the share sheet. */
+  get canWriteFiles() {
+    return this.available && this.platform === 'ios' && !!this._recorder && typeof this._recorder.writeFile === 'function';
+  }
+  writeFile(o) {
+    return this._recorder.writeFile(o);
+  }
+  clearFiles(o) {
+    return this._recorder.clearFiles(o);
+  }
+  listDirs(o) {
+    return this._recorder.listDirs(o);
+  }
+  shareFiles(o) {
+    return this._recorder.shareFiles(o);
+  }
+
   /** Leave background-recording mode. */
   async endSession() {
     if (!this.supported || !this._active) return;

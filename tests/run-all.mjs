@@ -15,6 +15,7 @@ import { run as wav } from './test-wav.mjs';
 import { run as engine } from './test-engine.mjs';
 import { run as apnea } from './test-apnea.mjs';
 import { run as listening } from './test-listening.mjs';
+import { run as nightExport } from './test-night-export.mjs';
 
 console.log('SleepSensor backend test suite');
 console.log('='.repeat(48));
@@ -35,6 +36,7 @@ try {
   await engine();
   await apnea();
   await listening();
+  await nightExport();
 } catch (err) {
   console.error('\nFATAL:', err);
   process.exit(1);

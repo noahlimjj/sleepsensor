@@ -12,4 +12,8 @@ CAP_PLUGIN(BackgroundRecorder, "BackgroundRecorder",
   CAP_PLUGIN_METHOD(requestPermissions, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(isBatteryOptimizationExempt, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(requestBatteryOptimizationExemption, CAPPluginReturnPromise);
+  CAP_PLUGIN_METHOD(writeFile, CAPPluginReturnPromise);
+  CAP_PLUGIN_METHOD(clearFiles, CAPPluginReturnPromise);
+  CAP_PLUGIN_METHOD(listDirs, CAPPluginReturnPromise);
+  CAP_PLUGIN_METHOD(shareFiles, CAPPluginReturnPromise);
 )

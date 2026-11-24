@@ -53,6 +53,13 @@ setString('NSMicrophoneUsageDescription', MIC_DESC);
 // no CoreBluetooth is used, so no Bluetooth usage string (strip any older one)
 if (has('NSBluetoothAlwaysUsageDescription')) plist('Delete :NSBluetoothAlwaysUsageDescription');
 
+// --- nightly logs + clips visible in Files → On My iPhone → Sleep Sensor ------
+for (const key of ['UIFileSharingEnabled', 'LSSupportsOpeningDocumentsInPlace']) {
+  if (has(key)) plist(`Set :${key}`, 'true');
+  else plist(`Add :${key} bool`, 'true');
+  console.log(`  ✓ ${key}`);
+}
+
 // --- background audio mode --------------------------------------------------
 if (!has('UIBackgroundModes')) {
   plist('Add :UIBackgroundModes array');

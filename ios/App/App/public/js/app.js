@@ -527,6 +527,13 @@ class App {
         await this._loadReport(this.currentSessionId);
       }
 
+      // keep a copy of the night in Files → On My iPhone → Sleep Sensor
+      if (summary && summary.sessionId) {
+        Promise.all([import('./night-export.js'), import('./native-bridge.js')])
+          .then(([m, nb]) => m.autoSaveNight({ storage: this.storage, native: nb.nativeBridge, sessionId: summary.sessionId }))
+          .catch((e) => console.warn('auto-save night failed:', e));
+      }
+
       // push this night's stats to the user's account (audio clips stay local)
       if (this.sync && summary && summary.sessionId) {
         this.sync.pushSession(summary.sessionId).catch(() => {});
@@ -1149,77 +1156,19 @@ class App {
       this._loadSampleSession();
     });
 
-    // Export
+    // Export: the latest night's log + audio clips via the share sheet
     document.getElementById('setting-export-btn').addEventListener('click', async () => {
-      if (!this.storage) return;
       const btn = document.getElementById('setting-export-btn');
       btn.disabled = true;
       try {
-        const sessions = await this.storage.getAllSessions();
-        // include events + highlights per session (clips are large binaries — skip)
-        const full = [];
-        for (const s of sessions) {
-          const [ev, hl] = await Promise.all([
-            this.storage.getEventsBySession(s.id),
-            this.storage.getHighlightsBySession(s.id),
-          ]);
-          full.push({ ...s, events: ev, highlights: hl });
-        }
-        // audio clips of the latest night go along as WAV files, so a missed or
-        // odd night can be checked by ear (and by the developer, if you send them)
-        const wavs = [];
-        const latest = sessions.reduce((a, b) => (!a || (b.startTime || 0) > (a.startTime || 0) ? b : a), null);
-        if (latest && typeof File !== 'undefined') {
-          const clips = await this.storage.getClipsBySession(latest.id).catch(() => []);
-          for (const c of clips) {
-            if (!c.audioBlob) continue;
-            const t = new Date(c.timestamp || Date.now());
-            const hh = String(t.getHours()).padStart(2, '0') + String(t.getMinutes()).padStart(2, '0') + String(t.getSeconds()).padStart(2, '0');
-            wavs.push(new File([c.audioBlob], `sleepsensor-${toDateKey(t)}-${hh}-${c.clipType || 'event'}.${c.format || 'wav'}`, { type: 'audio/wav' }));
-          }
-        }
-        const data = { app: 'SleepSensor', exportedAt: new Date().toISOString(), sessions: full };
-        const fileName = `sleepsensor-export-${toDateKey(new Date())}.json`;
-        const jsonStr = JSON.stringify(data, null, 2);
-        const blob = new Blob([jsonStr], { type: 'application/json' });
-
-        // iOS WKWebView does not download blob: URLs via <a> click.
-        // Use Web Share API if supported.
-        let shared = false;
-        if (typeof navigator !== 'undefined' && navigator.canShare) {
-          try {
-            const file = new File([blob], fileName, { type: 'application/json' });
-            const withAudio = [file, ...wavs];
-            const files = wavs.length && navigator.canShare({ files: withAudio }) ? withAudio : [file];
-            if (navigator.canShare({ files })) {
-              await navigator.share({
-                title: 'SleepSensor Export',
-                files,
-              });
-              shared = true;
-            }
-          } catch (shareErr) {
-            if (shareErr && shareErr.name === 'AbortError') return; // User cancelled share sheet
-            console.warn('Native file share failed, falling back to download:', shareErr);
-          }
-        }
-
-        if (!shared) {
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = fileName;
-          a.style.display = 'none';
-          document.body.appendChild(a);
-          a.click();
-          setTimeout(() => {
-            a.remove();
-            URL.revokeObjectURL(url);
-          }, 1500);
-        }
+        const { exportNight } = await import('./night-export.js');
+        const { nativeBridge } = await import('./native-bridge.js');
+        const r = await exportNight({ storage: this.storage, native: nativeBridge });
+        if (r.how === 'empty') this._banner('Nothing to export yet: record a night first.', { autoHideMs: 5000 });
+        else if (!r.ok && r.how !== 'cancelled') this._banner('Export is not supported here.', { autoHideMs: 6000 });
       } catch (e) {
         console.warn('export failed:', e);
-        this._banner('Export failed — try again.');
+        this._banner(`Export failed: ${(e && e.message) || e}`, { autoHideMs: 8000 });
       } finally {
         btn.disabled = false;
       }
