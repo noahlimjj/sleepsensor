@@ -756,7 +756,7 @@ class App {
 
     // Date (+ note if this night was recovered after a crash)
     document.getElementById('report-date').textContent =
-      formatDate(session.startTime) + (session.recovered ? ' · ended unexpectedly' : '');
+      formatDate(session.startTime) + (session.recovered ? ' · ended unexpectedly' : '') + listeningNote(session);
 
     // Summary cards
     const totalSleep = session.totalDuration || ((session.endTime - session.startTime) / 1000);
@@ -1165,6 +1165,19 @@ class App {
           ]);
           full.push({ ...s, events: ev, highlights: hl });
         }
+        // audio clips of the latest night go along as WAV files, so a missed or
+        // odd night can be checked by ear (and by the developer, if you send them)
+        const wavs = [];
+        const latest = sessions.reduce((a, b) => (!a || (b.startTime || 0) > (a.startTime || 0) ? b : a), null);
+        if (latest && typeof File !== 'undefined') {
+          const clips = await this.storage.getClipsBySession(latest.id).catch(() => []);
+          for (const c of clips) {
+            if (!c.audioBlob) continue;
+            const t = new Date(c.timestamp || Date.now());
+            const hh = String(t.getHours()).padStart(2, '0') + String(t.getMinutes()).padStart(2, '0') + String(t.getSeconds()).padStart(2, '0');
+            wavs.push(new File([c.audioBlob], `sleepsensor-${toDateKey(t)}-${hh}-${c.clipType || 'event'}.${c.format || 'wav'}`, { type: 'audio/wav' }));
+          }
+        }
         const data = { app: 'SleepSensor', exportedAt: new Date().toISOString(), sessions: full };
         const fileName = `sleepsensor-export-${toDateKey(new Date())}.json`;
         const jsonStr = JSON.stringify(data, null, 2);
@@ -1176,10 +1189,12 @@ class App {
         if (typeof navigator !== 'undefined' && navigator.canShare) {
           try {
             const file = new File([blob], fileName, { type: 'application/json' });
-            if (navigator.canShare({ files: [file] })) {
+            const withAudio = [file, ...wavs];
+            const files = wavs.length && navigator.canShare({ files: withAudio }) ? withAudio : [file];
+            if (navigator.canShare({ files })) {
               await navigator.share({
                 title: 'SleepSensor Export',
-                files: [file],
+                files,
               });
               shared = true;
             }
@@ -1627,4 +1642,13 @@ if ('serviceWorker' in navigator && !_isNative) {
       console.warn('SW registration failed:', err);
     });
   });
+}
+
+/** " · mic off 1h 10m from 05:02" when the night has listening gaps worth knowing about. */
+export function listeningNote(session) {
+  const gaps = Array.isArray(session && session.listenGaps) ? session.listenGaps : [];
+  const sec = gaps.reduce((a, g) => a + (g.sec || 0), 0);
+  if (sec < 120) return '';
+  const longest = gaps.reduce((a, g) => (!a || g.sec > a.sec ? g : a), null);
+  return ` · mic off ${formatDuration(sec)} (longest from ${formatTime(longest.start)})`;
 }

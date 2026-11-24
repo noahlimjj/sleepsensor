@@ -14,6 +14,7 @@ import { run as bedtime } from './test-bedtime-reminder.mjs';
 import { run as wav } from './test-wav.mjs';
 import { run as engine } from './test-engine.mjs';
 import { run as apnea } from './test-apnea.mjs';
+import { run as listening } from './test-listening.mjs';
 
 console.log('SleepSensor backend test suite');
 console.log('='.repeat(48));
@@ -33,6 +34,7 @@ try {
   await wav();
   await engine();
   await apnea();
+  await listening();
 } catch (err) {
   console.error('\nFATAL:', err);
   process.exit(1);

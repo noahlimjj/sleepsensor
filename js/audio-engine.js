@@ -96,6 +96,17 @@ const APNEA_CLIP_TAIL_SEC = 8; // the recovery breaths; detection fires ~30 s la
 // background-resilience watchdog
 const STALL_TIMEOUT_MS = 9000; // no worklet audio for this long => try to recover
 
+// dead-mic detection. After an interruption (notification, Siri, an alarm,
+// another app) iOS WebKit can leave the getUserMedia track muted: the worklet
+// keeps running but is fed pure digital zeros, which looks exactly like a quiet
+// room — the night silently records nothing. A real microphone never delivers
+// a 2 s window this quiet, so a few such windows mean the mic is gone: reopen it.
+const DEAD_MIC_PEAK = 3e-6; // ~ -110 dBFS: below any real mic's self-noise
+const DEAD_MIC_WINDOWS = 3; // 6 s of dead air
+const MIC_REOPEN_MIN_GAP_MS = 20000; // retry the mic at most this often
+const MAX_GAPS = 60; // listening gaps kept per session
+const TRACE_MAX_MIN = 16 * 60; // per-minute diagnostic trace (one row per minute)
+
 export class AudioEngine {
   constructor({ classifier, storage, onEnergy, onEvent, onStatusChange } = {}) {
     this.storage = storage || null;
@@ -147,6 +158,7 @@ export class AudioEngine {
     this._checkpointTimer = null;
     this._suspendedSince = 0;
     this._interrupted = false;
+    this._resetListening();
     this.native = nativeBridge;
     this._onVisibility = this._handleVisibility.bind(this);
     this._onCtxStateChange = this._handleCtxStateChange.bind(this);
@@ -365,6 +377,7 @@ export class AudioEngine {
       this._startKeepAlive();
 
       this.workletNode.port.postMessage({ command: 'set-threshold', value: this.noiseGate });
+      this._watchTrack();
 
       // 3. everything that can safely happen after we hold the mic
       if (!this.classifier) this.classifier = new Classifier();
@@ -387,6 +400,7 @@ export class AudioEngine {
       this._tally = freshTally();
       this._suspendedSince = 0;
       this._interrupted = false;
+      this._resetListening();
       this._smoother.reset();
       this.apneaDetector.reset();
       this._floor = null;
@@ -458,7 +472,9 @@ export class AudioEngine {
     const pct = (d) => (totalDuration ? round1((d / totalDuration) * 100) : 0);
     const ahi = ApneaDetector.calculateAhiMetrics(this.apneaDetector.events, totalDuration);
 
+    this._markHearing(); // close an open gap at the stop time
     const summaryPatch = {
+      ...this._listeningPatch(),
       endTime,
       totalDuration,
       snoringDuration: round1(t.snoringDuration),
@@ -523,6 +539,7 @@ export class AudioEngine {
       this.storage
         .updateSession(this.session.id, {
           lastCheckpoint: Date.now(),
+          ...this._listeningPatch(),
           snoringDuration: round1(t.snoringDuration),
           bruxismDuration: round1(t.bruxismDuration),
           noiseDuration: round1(t.noiseDuration),
@@ -555,6 +572,7 @@ export class AudioEngine {
     if (!this._recording) return;
     if (began) {
       this._interrupted = true;
+      this._markDeaf('interrupted');
       this._setStatus('interrupted', 'Audio interrupted (call, alarm or another app) — will resume automatically.');
     } else {
       this._interrupted = false;
@@ -565,6 +583,8 @@ export class AudioEngine {
       this.wakeLock.acquire().catch(() => {});
       this._lastAudioAt = Date.now();
       this._setStatus('recording', null, { resumedFromInterruption: true });
+      // the OS often hands the session back with the WebView's mic still muted
+      setTimeout(() => this._checkMic('after-interruption'), 1500);
     }
   }
 
@@ -585,6 +605,7 @@ export class AudioEngine {
     }
     this._lastAudioAt = Date.now();
     this._trackDbA(msg);
+    if (msg.type === 'silence' || msg.type === 'spectrogram') this._noteWindowAlive(msg);
 
     switch (msg.type) {
       case 'silence': {
@@ -612,6 +633,7 @@ export class AudioEngine {
         // temporal smoothing (HMM forward filter) -> stable event decisions
         const smoothed = this._smoother.push(result.scores || {});
         this._lastRaw = result;
+        this._traceLabel(result.type);
         this._considerHighlight(msg, result); // highlights use the raw per-window label
         this._handleClassification(smoothed, msg, result);
         this._feedApnea(result, msg); // pause timing needs the unsmoothed verdict
@@ -1139,11 +1161,167 @@ export class AudioEngine {
     }
   }
 
+  // ---- is the microphone actually hearing anything? ------------------
+  _resetListening() {
+    this._gaps = [];
+    this._deafSince = 0;
+    this._deafReason = null;
+    this._deadWindows = 0;
+    this._micReopens = 0;
+    this._lastReopen = 0;
+    this._reopening = false;
+    this._trace = [];
+  }
+
+  /** Start (or keep) a "not listening" gap. */
+  _markDeaf(reason, now = Date.now()) {
+    if (!this._recording && !this.session) return;
+    if (!this._deafSince) {
+      this._deafSince = now;
+      this._deafReason = reason;
+    }
+  }
+
+  /** Audio is flowing again: close the open gap, if any. */
+  _markHearing(now = Date.now()) {
+    if (!this._deafSince) return;
+    const start = this._deafSince;
+    const end = Math.max(start, now);
+    this._deafSince = 0;
+    if (end - start < 4000) return; // a blip, not a gap
+    this._gaps.push({ start, end, sec: round1((end - start) / 1000), reason: this._deafReason });
+    if (this._gaps.length > MAX_GAPS) this._gaps.shift();
+  }
+
+  _listeningPatch() {
+    const open = this._deafSince ? [{ start: this._deafSince, end: Date.now(), sec: round1((Date.now() - this._deafSince) / 1000), reason: this._deafReason, open: true }] : [];
+    const gaps = [...this._gaps, ...open];
+    return {
+      listenGaps: gaps,
+      deafSec: round1(gaps.reduce((a, g) => a + g.sec, 0)),
+      micReopens: this._micReopens,
+      trace: this._trace.slice(-TRACE_MAX_MIN),
+    };
+  }
+
+  _traceRow(wall) {
+    const m = Math.floor((wall - this.startWallTime) / 60000);
+    let row = this._trace[this._trace.length - 1];
+    if (!row || row.m !== m) {
+      // m: minute since start; db: loudest window (dBFS); n: windows; s: sound
+      // windows classified; sn/br: raw snoring/grinding labels; z: dead-mic windows
+      row = { m, db: -120, n: 0, s: 0, sn: 0, br: 0, z: 0 };
+      this._trace.push(row);
+      if (this._trace.length > TRACE_MAX_MIN) this._trace.shift();
+    }
+    return row;
+  }
+
+  _traceLabel(type) {
+    const row = this._trace[this._trace.length - 1];
+    if (!row) return;
+    row.s += 1;
+    if (type === 'snoring') row.sn += 1;
+    else if (type === 'bruxism') row.br += 1;
+  }
+
+  _noteWindowAlive(msg) {
+    const wall = this._ctxToWall(msg.timestamp);
+    const row = this._traceRow(wall);
+    row.n += 1;
+    const lvl = Math.max(msg.peak ?? 0, msg.rms ?? 0, msg.activeRms ?? 0);
+    const db = lvl > 0 ? round1(dbFS(lvl)) : -120;
+    if (db > row.db) row.db = db;
+    if (lvl < DEAD_MIC_PEAK) {
+      row.z += 1;
+      this._deadWindows += 1;
+      if (this._deadWindows >= DEAD_MIC_WINDOWS) {
+        // the gap began with the first dead window
+        this._markDeaf('mic-silent', wall - (DEAD_MIC_WINDOWS - 1) * WINDOW_SEC * 1000);
+        this._reopenMic('mic-silent');
+      }
+    } else {
+      this._deadWindows = 0;
+      if (!this._interrupted && !this._suspendedSince) this._markHearing(wall - WINDOW_SEC * 1000);
+    }
+  }
+
+  _audioTrack() {
+    return this.mediaStream && this.mediaStream.getAudioTracks ? this.mediaStream.getAudioTracks()[0] : null;
+  }
+
+  _watchTrack() {
+    const track = this._audioTrack();
+    if (!track) return;
+    track.onmute = () => {
+      if (!this._recording) return;
+      this._markDeaf('mic-muted');
+      // give the OS a moment to unmute on its own before reopening
+      setTimeout(() => {
+        if (this._recording && track === this._audioTrack() && track.muted) this._reopenMic('mic-muted');
+      }, 3000);
+    };
+    track.onended = () => {
+      if (!this._recording || track !== this._audioTrack()) return;
+      this._markDeaf('mic-ended');
+      this._reopenMic('mic-ended');
+    };
+  }
+
+  /** Reopen the mic if it is muted, ended or feeding dead air. */
+  _checkMic(why) {
+    if (!this._recording) return;
+    const t = this._audioTrack();
+    if (!t || t.readyState === 'ended' || t.muted || this._deadWindows >= DEAD_MIC_WINDOWS) {
+      this._reopenMic(why, { force: why === 'foreground' });
+    }
+  }
+
+  async _reopenMic(reason, { force = false } = {}) {
+    if (!this._recording || this._reopening || !this.audioContext || !this.workletNode) return false;
+    const now = Date.now();
+    if (!force && now - this._lastReopen < MIC_REOPEN_MIN_GAP_MS) return false;
+    this._lastReopen = now;
+    this._reopening = true;
+    try {
+      const old = this.mediaStream;
+      // WebKit allows one live capture: release the dead track first
+      if (old) old.getTracks().forEach((t) => t.stop());
+      const stream = await openMicrophone();
+      if (!this._recording) {
+        stream.getTracks().forEach((t) => t.stop());
+        return false;
+      }
+      const oldSrc = this.sourceNode;
+      this.mediaStream = stream;
+      this.sourceNode = this.audioContext.createMediaStreamSource(stream);
+      this.sourceNode.connect(this.workletNode);
+      try {
+        if (oldSrc) oldSrc.disconnect();
+      } catch (_) {
+        /* already gone */
+      }
+      this._watchTrack();
+      this._micReopens += 1;
+      this._deadWindows = 0;
+      if (this.audioContext.state !== 'running') this.audioContext.resume().catch(() => {});
+      this._setStatus('recording', null, { micReopened: reason });
+      return true;
+    } catch (e) {
+      console.warn('[AudioEngine] mic reopen failed (' + reason + '):', e && (e.name || e.message));
+      this._setStatus('stalled', 'Microphone was paused by the system — open the app to resume.');
+      return false;
+    } finally {
+      this._reopening = false;
+    }
+  }
+
   _handleCtxStateChange() {
     const st = this.audioContext && this.audioContext.state;
     if (!this._recording) return;
     if (st === 'suspended' || st === 'interrupted') {
       if (!this._suspendedSince) this._suspendedSince = Date.now();
+      this._markDeaf('suspended');
       this._setStatus('interrupted', 'Audio paused by the operating system — keep the app open.');
       this.audioContext.resume().catch(() => {});
     } else if (st === 'running' && this._suspendedSince) {
@@ -1151,6 +1329,7 @@ export class AudioEngine {
       this._suspendedSince = 0;
       this._lastAudioAt = Date.now();
       this._setStatus('recording', null, { recoveredGapSec: gapSec });
+      setTimeout(() => this._checkMic('after-suspend'), 1500);
     }
   }
 
@@ -1161,6 +1340,7 @@ export class AudioEngine {
         this.audioContext.resume().catch(() => {});
       }
       this.wakeLock.acquire().catch(() => {});
+      this._checkMic('foreground');
     }
   }
 
@@ -1171,6 +1351,7 @@ export class AudioEngine {
       const idle = Date.now() - this._lastAudioAt;
       if (idle > STALL_TIMEOUT_MS) {
         this._setStatus('stalled', `No audio for ${Math.round(idle / 1000)}s — attempting recovery.`);
+        this._markDeaf('stalled');
         if (this.audioContext && this.audioContext.state !== 'running') {
           this.audioContext.resume().catch(() => {});
         }
