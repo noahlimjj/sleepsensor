@@ -18,6 +18,8 @@ import { run as listening } from './test-listening.mjs';
 import { run as nightExport } from './test-night-export.mjs';
 import { run as loudness } from './test-loudness.mjs';
 import { run as nightClips } from './test-night-clips.mjs';
+import { run as baseline } from './test-baseline.mjs';
+import { run as nightExtras } from './test-night-extras.mjs';
 
 console.log('SleepSensor backend test suite');
 console.log('='.repeat(48));
@@ -41,6 +43,8 @@ try {
   await nightExport();
   await loudness();
   await nightClips();
+  await baseline();
+  await nightExtras();
 } catch (err) {
   console.error('\nFATAL:', err);
   process.exit(1);

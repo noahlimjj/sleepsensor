@@ -22,6 +22,8 @@ import { Classifier } from './classifier.js';
 import { HmmSmoother } from './smoothing.js';
 import { nativeBridge } from './native-bridge.js';
 import { ApneaDetector } from './apnea-detector.js';
+import { RespRateTracker } from './resp-rate.js';
+import { soundShape, labelNoise } from './sound-shape.js';
 
 const SMOOTH_CLASSES = ['quiet', 'snoring', 'bruxism', 'noise'];
 
@@ -105,6 +107,23 @@ const DEAD_MIC_PEAK = 3e-6; // ~ -110 dBFS: below any real mic's self-noise
 const DEAD_MIC_WINDOWS = 3; // 6 s of dead air
 const MIC_REOPEN_MIN_GAP_MS = 20000; // retry the mic at most this often
 const MAX_GAPS = 60; // listening gaps kept per session
+
+// night baseline: a generic sound is only logged when it clearly deviates from
+// what this night normally sounds like (the 60th percentile of the last 10 min
+// of window levels, so steady breathing, a fan or soft room noise sets the bar
+// instead of the silent gaps between breaths), by a sensitivity-dependent margin.
+// A sound has to persist ~4 min before it counts as the new normal.
+const BASELINE_WINDOWS = 300; // 10 min
+const BASELINE_PCT = 0.6;
+const BASELINE_WARMUP = 15; // 30 s before the baseline is trusted
+
+// clicks / snaps (detected in the worklet): clicks within 10 s form one event;
+// only a few representative clips are kept, the rest are counted and timed
+const CLICK_CLUSTER_GAP_MS = 10000;
+const MAX_CLICK_CLIPS = 8;
+const MIN_CLICKS_PER_EVENT = 2;
+const MAX_CLICK_TIMES = 4000;
+const TMJ_WINDOW_MS = 120000; // clicks this close to grinding: possibly TMJ/bruxism-related
 const TRACE_MAX_MIN = 16 * 60; // per-minute diagnostic trace (one row per minute)
 
 export class AudioEngine {
@@ -159,6 +178,7 @@ export class AudioEngine {
     this._suspendedSince = 0;
     this._interrupted = false;
     this._resetListening();
+    this._resetNight();
     this.native = nativeBridge;
     this._onVisibility = this._handleVisibility.bind(this);
     this._onCtxStateChange = this._handleCtxStateChange.bind(this);
@@ -401,6 +421,7 @@ export class AudioEngine {
       this._suspendedSince = 0;
       this._interrupted = false;
       this._resetListening();
+      this._resetNight();
       this._smoother.reset();
       this.apneaDetector.reset();
       this._floor = null;
@@ -454,6 +475,7 @@ export class AudioEngine {
     if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', this._onVisibility);
 
     await this._finalizePending();
+    this._finalizeClicks();
     if (this._clipQueue.length) await delay(500); // let outstanding clips arrive
 
     await this.wakeLock.release();
@@ -605,7 +627,11 @@ export class AudioEngine {
     }
     this._lastAudioAt = Date.now();
     this._trackDbA(msg);
-    if (msg.type === 'silence' || msg.type === 'spectrogram') this._noteWindowAlive(msg);
+    if (msg.type === 'silence' || msg.type === 'spectrogram') {
+      this._noteWindowAlive(msg);
+      this._feedRespRate(msg);
+      this._feedClicks(msg);
+    }
 
     switch (msg.type) {
       case 'silence': {
@@ -735,9 +761,17 @@ export class AudioEngine {
     if (result.type === 'bruxism' && result.confidence >= Math.max(min, 0.5)) {
       return { type: 'bruxism', confidence: result.confidence };
     }
-    const level = this._level(msg);
+    // a click inflates the window's loudest 100 ms slice; judge clicky windows
+    // on their 2 s level (the clicks themselves are counted separately)
+    const level = msg.clicks && msg.clicks.length ? msg.rms ?? 0 : this._level(msg);
     const threshold = this.loudThreshold();
-    const loud = level >= threshold;
+    // inside an ongoing snoring/grinding bout the in-between windows keep it
+    // together (the model flips between labels); elsewhere a generic sound must
+    // clearly deviate from the night's baseline
+    const p = this._pending;
+    const inBout = !!(p && p.emitted && (p.type === 'snoring' || p.type === 'bruxism'));
+    const snoreish = !!(raw && raw.scores && (raw.scores.snoring || 0) >= BOUT_SNORE_MEAN);
+    const loud = level >= threshold && (inBout || snoreish || level >= this.deviationThreshold());
     // no "confident quiet" veto: steady background (a fan, AC) is already
     // absorbed into the floor, and the model often calls a quiet cough "quiet"
     if (result.type === 'noise' && result.confidence >= 0.4 && loud) {
@@ -759,7 +793,10 @@ export class AudioEngine {
     if (this._floor == null) this._trackLevel(msg);
     this._noteQuiet(msg);
     const positive = this._effectiveType(result, msg, raw);
+    const devHit = !!positive && this._windowLevel(msg) >= this.deviationThreshold();
     this._trackLevel(msg);
+    this._noteBaseline(msg);
+    if (!positive) this._noteBackgroundBand(msg);
 
     if (positive) {
       const { type, confidence } = positive;
@@ -780,6 +817,8 @@ export class AudioEngine {
         p.maxLevel = Math.max(p.maxLevel, level);
         this._addLevel(p, msg);
         this._addBoutEvidence(p, raw);
+        this._addShape(p, msg);
+        if (devHit) p.devHit = true;
         this._negativeStreak = 0;
       } else {
         this._finalizePending();
@@ -803,6 +842,8 @@ export class AudioEngine {
         };
         this._addLevel(this._pending, msg);
         this._addBoutEvidence(this._pending, raw);
+        this._addShape(this._pending, msg);
+        this._pending.devHit = devHit;
         this._negativeStreak = 0;
       }
 
@@ -817,7 +858,7 @@ export class AudioEngine {
         } else {
           this._growPending();
         }
-      } else if (!cur.emitted && (cur.votes.noise || 0) >= this._confirmCount('noise', msg)) {
+      } else if (!cur.emitted && cur.devHit && (cur.votes.noise || 0) >= this._confirmCount('noise', msg)) {
         cur.type = 'noise';
         this._confirmPending();
       } else if (cur.emitted) {
@@ -875,7 +916,7 @@ export class AudioEngine {
     this._tally[from + 'Episodes'] = Math.max(0, this._tally[from + 'Episodes'] - 1);
     this._tally[type + 'Episodes'] += 1;
     p.type = type;
-    if (this.storage) this.storage.updateEvent(p.eventId, { type }).catch(() => {});
+    if (this.storage) this.storage.updateEvent(p.eventId, { type, subtype: null }).catch(() => {});
     this._growPending();
     const confidence = avg(p.confidences);
     this.onEvent({
@@ -913,6 +954,7 @@ export class AudioEngine {
       timestamp: Math.round(p.startWall),
       hasClip: false,
     };
+    if (p.type === 'noise') rec.subtype = this._noiseLabel(p, duration);
     if (this.storage) this.storage.addEvent(rec).catch((e) => console.warn('[AudioEngine] addEvent:', e));
     this._tally[p.type + 'Episodes'] += 1;
 
@@ -953,7 +995,7 @@ export class AudioEngine {
     if (!p.emitted) {
       // a sound the model guessed was snoring/grinding but that never
       // repeated is still a real sound: log it if it stood out from the room
-      if (p.maxLevel < this.loudThreshold()) return;
+      if (!p.devHit || p.maxLevel < this.loudThreshold()) return;
       p.type = 'noise';
       this._pending = p;
       this._confirmPending();
@@ -962,6 +1004,11 @@ export class AudioEngine {
 
     const durationSec = Math.max(WINDOW_SEC, (p.lastWall - p.startWall) / 1000);
     this._tally[p.type + 'Duration'] += durationSec;
+    if (p.type === 'noise') {
+      const sub = this._noiseLabel(p, durationSec);
+      if (this.storage && p.eventId) this.storage.updateEvent(p.eventId, { subtype: sub }).catch(() => {});
+    }
+    if (p.type === 'bruxism') this._noteGrind(p.startWall, p.lastWall);
 
     if (this.workletNode) {
       this._clipQueue.push({
@@ -1201,6 +1248,8 @@ export class AudioEngine {
       deafSec: round1(gaps.reduce((a, g) => a + g.sec, 0)),
       micReopens: this._micReopens,
       trace: this._trace.slice(-TRACE_MAX_MIN),
+      respRate: this._rr ? this._rr.summary() : null,
+      clicks: this._clicks ? { ...this._clicks, times: this._clickTimes.slice() } : null,
     };
   }
 
@@ -1313,6 +1362,186 @@ export class AudioEngine {
       return false;
     } finally {
       this._reopening = false;
+    }
+  }
+
+  // ---- night baseline, sound labels, breathing rate, clicks ------------
+  _resetNight() {
+    this._lvlHist = [];
+    this._rr = new RespRateTracker();
+    this._clickCluster = null;
+    this._clickTimes = [];
+    this._clickClips = 0;
+    this._clickEvents = [];
+    this._grindSpans = [];
+    this._clicks = { count: 0, events: 0, nearGrind: 0, nearGrindEvents: 0 };
+  }
+
+  /** Dominant band of the room when nothing is happening (hum, fan, AC). */
+  _noteBackgroundBand(msg) {
+    if (!msg.data || msg.data.length < 256) return;
+    const sh = soundShape(msg.data);
+    if (!sh) return;
+    this._bgBands = this._bgBands || [];
+    this._bgBands.push(sh.band);
+    if (this._bgBands.length > 60) this._bgBands.shift();
+  }
+
+  _backgroundBand() {
+    const b = this._bgBands;
+    if (!b || b.length < 5) return null;
+    const h = new Map();
+    for (const x of b) h.set(x, (h.get(x) || 0) + 1);
+    let mode = null, best = 0;
+    for (const [k, c] of h) if (c > best) { best = c; mode = k; }
+    return best >= b.length * 0.3 ? mode : null;
+  }
+
+  _windowLevel(msg) {
+    return msg.clicks && msg.clicks.length ? msg.rms ?? 0 : this._level(msg);
+  }
+
+  _noteBaseline(msg) {
+    const lvl = this._windowLevel(msg);
+    if (!(lvl > 0)) return;
+    this._lvlHist.push(lvl);
+    if (this._lvlHist.length > BASELINE_WINDOWS) this._lvlHist.shift();
+  }
+
+  /** The night's normal level (RMS): 60th percentile of the last 10 minutes. */
+  nightBaseline() {
+    const h = this._lvlHist;
+    if (!h || h.length < BASELINE_WARMUP) return null;
+    const s = [...h].sort((a, b) => a - b);
+    return s[Math.floor((s.length - 1) * BASELINE_PCT)];
+  }
+
+  /** RMS a generic sound must reach to count as deviating from the night. */
+  deviationThreshold() {
+    const base = this.nightBaseline();
+    // 6.5 dB over the baseline at minimum sensitivity, 2.5 dB at maximum (~3.7 at default)
+    const marginDb = 6.5 - 4 * this.sensitivity;
+    // first 30 s: no baseline yet, so only a clearly loud sound counts
+    if (base == null) return this.loudThreshold() * Math.pow(10, 10 / 20);
+    return base * Math.pow(10, marginDb / 20);
+  }
+
+  _addShape(p, msg) {
+    if (!msg.data || msg.data.length < 256) return;
+    const sh = soundShape(msg.data);
+    if (!sh) return;
+    p.sh = p.sh || { n: 0, tonal: 0, stable: 0, burst: 0, bands: [] };
+    p.sh.n += 1;
+    p.sh.bands.push(sh.band);
+    p.sh.tonal += sh.tonal;
+    p.sh.stable += sh.stable;
+    p.sh.burst += sh.burst;
+  }
+
+  _noiseLabel(p, durationSec) {
+    if (!p.sh || !p.sh.n) return 'other';
+    const n = p.sh.n;
+    const bands = [...p.sh.bands].sort((a, b) => a - b);
+    const band = bands[bands.length >> 1];
+    const bg = this._backgroundBand();
+    // a steady tone the room always has (mains hum, a fan's whine) is not a buzz
+    const newTone = bg == null || Math.abs(band - bg) > 3;
+    return labelNoise({ tonal: p.sh.tonal / n, stable: newTone ? p.sh.stable / n : 0, burst: p.sh.burst / n }, durationSec);
+  }
+
+  _feedRespRate(msg) {
+    if (!msg.breath || !msg.breath.length) return;
+    const wall = this._ctxToWall(msg.timestamp);
+    const pt = this._rr.push(msg.breath, wall);
+    if (pt) {
+      const row = this._trace[this._trace.length - 1];
+      if (row) row.rr = pt.bpm;
+    }
+  }
+
+  _feedClicks(msg) {
+    const wall = this._ctxToWall(msg.timestamp);
+    const cl = this._clickCluster;
+    if (cl && wall - WINDOW_SEC * 1000 - cl.last > CLICK_CLUSTER_GAP_MS) this._finalizeClicks();
+    const clicks = msg.clicks;
+    if (!clicks || !clicks.length) return;
+    const row = this._trace[this._trace.length - 1];
+    const winStart = wall - WINDOW_SEC * 1000;
+    const ctxStart = (typeof msg.timestamp === 'number' ? msg.timestamp : this._wallToCtx(wall)) - WINDOW_SEC;
+    for (const c of clicks) {
+      const t = winStart + c.t * 1000;
+      const ctx = ctxStart + c.t;
+      this._clicks.count += 1;
+      if (row) row.ck = (row.ck || 0) + 1;
+      if (this._clickTimes.length < MAX_CLICK_TIMES) this._clickTimes.push(Math.round(t - this.startWallTime));
+      const cur = this._clickCluster;
+      if (cur && t - cur.last <= CLICK_CLUSTER_GAP_MS) {
+        cur.n += 1;
+        cur.last = t;
+        cur.lastCtx = ctx;
+        cur.db = Math.max(cur.db, c.db);
+      } else {
+        if (cur) this._finalizeClicks();
+        this._clickCluster = { start: t, last: t, startCtx: ctx, lastCtx: ctx, n: 1, db: c.db };
+      }
+    }
+  }
+
+  _nearGrind(t0, t1) {
+    const spans = [...this._grindSpans];
+    const p = this._pending;
+    if (p && p.emitted && p.type === 'bruxism') spans.push({ start: p.startWall, end: p.lastWall });
+    return spans.some((g) => t0 <= g.end + TMJ_WINDOW_MS && t1 >= g.start - TMJ_WINDOW_MS);
+  }
+
+  _finalizeClicks() {
+    const cl = this._clickCluster;
+    this._clickCluster = null;
+    if (!cl) return;
+    if (cl.n < MIN_CLICKS_PER_EVENT) return; // a lone click is counted and timed, not logged
+    const nearGrind = this._nearGrind(cl.start, cl.last);
+    const eventId = cryptoId();
+    const sessionId = this.session ? this.session.id : null;
+    const duration = round1(Math.max(0.1, (cl.last - cl.start) / 1000));
+    const rec = {
+      id: eventId, sessionId, type: 'click', count: cl.n, nearGrind,
+      startTime: Math.round(cl.start), endTime: Math.round(cl.last), timestamp: Math.round(cl.start),
+      duration, confidence: 0.8, severity: cl.n >= 5 ? 'moderate' : 'mild', peakDb: cl.db, hasClip: false,
+    };
+    if (this.storage) this.storage.addEvent(rec).catch((e) => console.warn('[AudioEngine] addEvent:', e));
+    this._clicks.events += 1;
+    if (nearGrind) {
+      this._clicks.nearGrind += cl.n;
+      this._clicks.nearGrindEvents += 1;
+    }
+    this._clickEvents.push({ id: eventId, start: cl.start, end: cl.last, n: cl.n, nearGrind });
+    if (this._clickEvents.length > 400) this._clickEvents.shift();
+    // a few representative clips, not hundreds
+    const want = this._clickClips < MAX_CLICK_CLIPS && (nearGrind || cl.n >= 3 || this._clickClips < 3);
+    if (want && this.workletNode) {
+      this._clickClips += 1;
+      this._clipQueue.push({ kind: 'event', id: eventId, sessionId });
+      this.workletNode.port.postMessage({
+        command: 'extract-clip',
+        startTime: Math.max(cl.startCtx - 2, cl.lastCtx - 25),
+        endTime: cl.lastCtx + 2,
+      });
+    }
+    this.onEvent({ type: 'click', count: cl.n, nearGrind, confidence: 0.8, severity: rec.severity, peakDb: cl.db, timestamp: rec.timestamp, duration, eventId });
+  }
+
+  /** A grinding episode ended: clicks within 2 min before it become TMJ-flagged too. */
+  _noteGrind(start, end) {
+    this._grindSpans.push({ start, end });
+    if (this._grindSpans.length > 200) this._grindSpans.shift();
+    for (const c of this._clickEvents) {
+      if (c.nearGrind) continue;
+      if (c.start <= end + TMJ_WINDOW_MS && c.end >= start - TMJ_WINDOW_MS) {
+        c.nearGrind = true;
+        this._clicks.nearGrind += c.n;
+        this._clicks.nearGrindEvents += 1;
+        if (this.storage) this.storage.updateEvent(c.id, { nearGrind: true }).catch(() => {});
+      }
     }
   }
 

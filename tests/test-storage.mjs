@@ -36,6 +36,18 @@ export async function run() {
     sessionId: s.id, type: 'bruxism', startTime: 7000, endTime: 9000,
     confidence: 0.4, severity: 'mild',
   });
+  // new event fields survive the round trip (click count, TMJ flag, sound label)
+  {
+    const sx = await storage.createSession({ startTime: Date.parse('2026-08-10T23:00:00Z') });
+    const ck = await storage.addEvent({ sessionId: sx.id, type: 'click', startTime: 1000, endTime: 5000, count: 4, nearGrind: true });
+    const mv = await storage.addEvent({ sessionId: sx.id, type: 'noise', startTime: 6000, endTime: 9000, subtype: 'movement' });
+    const back = await storage.getEventsBySession(sx.id);
+    await storage.deleteSession(sx.id);
+    const c2 = back.find((e) => e.id === ck.id), m2 = back.find((e) => e.id === mv.id);
+    eq(c2.count, 4, 'click count stored');
+    eq(c2.nearGrind, true, 'near-grinding flag stored');
+    eq(m2.subtype, 'movement', 'sound label stored');
+  }
   eq(e1.duration, 5, 'addEvent computes duration from start/end when absent');
   const evs = await storage.getEventsBySession(s.id);
   eq(evs.length, 2, 'getEventsBySession returns all events');

@@ -1449,7 +1449,10 @@ class App {
         { type: 'snoring', offsetSec: 14400, dur: 360, conf: 0.98, sev: 'severe' },
         { type: 'bruxism', offsetSec: 18000, dur: 140, conf: 0.91, sev: 'severe' },
         { type: 'snoring', offsetSec: 21600, dur: 180, conf: 0.92, sev: 'moderate' },
-        { type: 'noise', offsetSec: 24000, dur: 30, conf: 0.80, sev: 'moderate', peakDb: -14 },
+        { type: 'noise', offsetSec: 24000, dur: 30, conf: 0.80, sev: 'moderate', peakDb: -14, subtype: 'movement' },
+        { type: 'click', offsetSec: 7160, dur: 6, conf: 0.8, sev: 'mild', peakDb: -30, count: 5, nearGrind: true },
+        { type: 'click', offsetSec: 7330, dur: 9, conf: 0.8, sev: 'moderate', peakDb: -28, count: 7, nearGrind: true },
+        { type: 'click', offsetSec: 12600, dur: 3, conf: 0.8, sev: 'mild', peakDb: -34, count: 2 },
       ];
 
       for (const ev of sampleEvents) {
@@ -1467,10 +1470,12 @@ class App {
           hasClip: true,
           peakDb: ev.peakDb ?? -20,
           peakDbA: Math.round((ev.peakDb ?? -20) + 86),
+          ...(ev.subtype ? { subtype: ev.subtype } : {}),
+          ...(ev.count ? { count: ev.count, nearGrind: !!ev.nearGrind } : {}),
         });
 
         // Add playable audio clip for the event
-        const clipBlob = makeWavBlob(ev.type === 'snoring' ? 140 : ev.type === 'bruxism' ? 520 : 300, 2.0);
+        const clipBlob = makeWavBlob(ev.type === 'snoring' ? 140 : ev.type === 'bruxism' ? 520 : ev.type === 'click' ? 2400 : 300, 2.0);
         await this.storage.saveClip({
           sessionId,
           eventId: evRec.id,
@@ -1481,6 +1486,19 @@ class App {
           timestamp: start,
         });
       }
+
+      // breathing rate, clicks and the per-minute trace (what a real night stores)
+      const trace = [];
+      for (let m = 0; m < 450; m++) trace.push({ m, db: -55, n: 30, s: 10, sn: 0, br: 0, z: 0, ...(m % 2 ? {} : { rr: Math.round((14.5 + 1.5 * Math.sin(m / 40) + (m > 300 ? 1 : 0)) * 10) / 10 }) });
+      const clickTimes = [];
+      for (const [off, n, span] of [[7160, 5, 6], [7330, 7, 9], [12600, 2, 3]]) for (let k = 0; k < n; k++) clickTimes.push(Math.round((off + (k * span) / n) * 1000));
+      for (let k = 0; k < 9; k++) clickTimes.push(Math.round((9000 + k * 700) * 1000)); // lone clicks
+      clickTimes.sort((a, b) => a - b);
+      await this.storage.updateSession(sessionId, {
+        trace,
+        respRate: { avg: 14.6, min: 13.1, max: 16.4, n: 225 },
+        clicks: { count: clickTimes.length, events: 3, nearGrind: 12, nearGrindEvents: 2, times: clickTimes },
+      });
 
       // Breathing pauses — the first two get playable clips
       for (const [i, ev] of apneaDefs.entries()) {

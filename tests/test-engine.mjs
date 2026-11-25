@@ -335,11 +335,13 @@ export async function run() {
     const { engine, calls } = makeEngine();
     prime(engine);
     let t = 0;
-    for (let i = 0; i < 150; i++) {
+    // five quiet minutes of room first: that is the night's baseline
+    for (let i = 0; i < 150; i++) engine._handleClassification(...QUIET((t += 2)));
+    for (let i = 0; i < 90; i++) {
       const msg = { type: 'spectrogram', timestamp: (t += 2), rms: 0.004, activeRms: 0.006, quietRms: 0.0006, peak: 0.01 };
       engine._handleClassification({ type: 'other', confidence: 0 }, msg);
     }
-    ok(engine._pending && engine._pending.emitted, 'still inside one event after 5 minutes');
+    ok(engine._pending && engine._pending.emitted, 'still inside one event after 3 minutes');
     eq(calls.events.length, 1, 'one continuous event');
     ok(engine.ambientFloor() < 0.001, 'floor follows the gaps, not the sound');
   }

@@ -10,6 +10,7 @@ const COLORS = {
   bruxism: '#888888',
   noise: '#555555',
   apnea: '#00d2ff',
+  click: '#ff6b8a',
 };
 
 export class Timeline {

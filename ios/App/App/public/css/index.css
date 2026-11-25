@@ -1443,3 +1443,12 @@ a {
 .nc-check input { width: 20px; height: 20px; accent-color: var(--white); }
 .nc-more { width: 100%; min-height: 38px; color: var(--light); font-size: 0.82rem; border-top: 1px solid var(--mid-dark); margin-top: 2px; }
 .nc-empty { color: var(--mid-light); font-size: 0.85rem; }
+:root { --nc-click: #ff6b8a; --nc-move: #7fd17f; --nc-buzz: #ffd84d; }
+.nc-stat-v small { font-size: 0.7rem; font-weight: 500; color: var(--mid-light); }
+.nc-click-line { font-size: 0.8rem; color: var(--light); }
+.nc-tmj-line { font-size: 0.8rem; color: var(--nc-click); }
+.nc-tmj { color: var(--nc-click); }
+.nc-rr { width: 100%; height: auto; display: block; margin-top: 6px; }
+.nc-rr-line { fill: none; stroke: var(--apnea); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.nc-rr-label { fill: var(--mid-light); font-size: 24px; }
+.nc-rr-label--end { text-anchor: end; }

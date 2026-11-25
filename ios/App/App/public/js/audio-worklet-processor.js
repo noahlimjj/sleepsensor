@@ -220,6 +220,56 @@ function quietFrameRms(buf, frame = 1600, pct = 0.1) {
   return vals[Math.floor((vals.length - 1) * pct)];
 }
 
+// ---- clicks / snaps ----------------------------------------------------------
+// Short impulsive sounds (jaw/TMJ clicks, tooth snaps, lip smacks, a tick): the
+// 1 ms peak envelope of the high-passed signal leaps far above the window's own
+// background, rose from near-background within 3 ms, falls back within 25 ms
+// and stays down. Breathing, snoring and grinding rise and fall slowly, so they
+// never qualify (0 hits on loud synthetic breathing; tuned on PSG-Audio).
+const CLICK_FRAME = 16; // 1 ms at 16 kHz
+const CLICK_OVER_DB = 16; // above the window's median 1 ms peak
+const CLICK_MAX_MS = 25;
+const CLICK_MIN_GAP = 80; // frames (80 ms) between separate clicks
+function detectClicks(buf, sr = 16000, minRms = 0) {
+  const F = Math.max(1, Math.round((CLICK_FRAME * sr) / 16000));
+  const n = Math.floor((buf.length - 1) / F);
+  const maxDur = Math.round((CLICK_MAX_MS * sr) / 1000 / F);
+  if (n < maxDur * 4) return [];
+  const e = new Float32Array(n);
+  for (let f = 0; f < n; f++) {
+    let m = 0;
+    const o = f * F;
+    for (let i = o + 1; i <= o + F; i++) {
+      const d = Math.abs(buf[i] - buf[i - 1]);
+      if (d > m) m = d;
+    }
+    e[f] = 20 * Math.log10(m + 1e-9);
+  }
+  const med = Array.from(e).sort((a, b) => a - b)[n >> 1];
+  const half = med + CLICK_OVER_DB / 2;
+  const minDb = 20 * Math.log10(Math.max(minRms, 1e-7)) + 6; // clears the noise gate too
+  const out = [];
+  let last = -1e9;
+  for (let f = 3; f < n - maxDur - 22; f++) {
+    const v = e[f];
+    if (v < med + CLICK_OVER_DB || v < minDb) continue;
+    if (v < e[f - 1] || v < e[f + 1]) continue; // local peak
+    if (Math.min(e[f - 3], e[f - 2]) > half) continue; // sharp onset
+    let k = f + 1;
+    while (k < f + maxDur && e[k] > half) k++;
+    if (k >= f + maxDur) continue; // too long: onset of a longer sound
+    let up = 0;
+    for (let j = k; j < k + 20; j++) if (e[j] > half) up++;
+    if (up > 3) continue; // a burst, not a click
+    if (f - last < CLICK_MIN_GAP) continue;
+    last = f;
+    let pk = 0;
+    for (let i = Math.max(0, (f - 2) * F); i < Math.min(buf.length, (f + 4) * F); i++) pk = Math.max(pk, Math.abs(buf[i]));
+    out.push({ t: (f * F) / sr, db: Math.round(200 * Math.log10(Math.max(pk, 1e-7))) / 10, over: Math.round((v - med) * 10) / 10 });
+  }
+  return out;
+}
+
 // ---- A-weighting (IEC 61672) ------------------------------------------------
 // Analog prototype k·s⁴ / ((s+ω1)²(s+ω2)(s+ω3)(s+ω4)²) split into first-order
 // sections, each mapped with the bilinear transform, then normalised to 0 dB
@@ -469,8 +519,9 @@ if (typeof registerProcessor !== 'undefined' && typeof AudioWorkletProcessor !==
       this._aN = 0;
       this._aFastMax = 0;
       const breath = this.breath.take(); // 1–4 kHz level per 100 ms, for breathing pauses
+      const clicks = detectClicks(this.window, SR, this.threshold);
       if (active < this.threshold) {
-        this.port.postMessage({ type: 'silence', timestamp, rms: energy, activeRms: active, quietRms: quiet, peak, zcr: zc, laeq, lafMax, breath });
+        this.port.postMessage({ type: 'silence', timestamp, rms: energy, activeRms: active, quietRms: quiet, peak, zcr: zc, laeq, lafMax, breath, clicks });
       } else {
         const spec = melSpectrogram(this.window, {
           fftSize: FFT_SIZE,
@@ -481,7 +532,7 @@ if (typeof registerProcessor !== 'undefined' && typeof AudioWorkletProcessor !==
           melFb: this.melFb,
         });
         this.port.postMessage(
-          { type: 'spectrogram', data: spec, timestamp, rms: energy, activeRms: active, quietRms: quiet, peak, zcr: zc, laeq, lafMax, breath },
+          { type: 'spectrogram', data: spec, timestamp, rms: energy, activeRms: active, quietRms: quiet, peak, zcr: zc, laeq, lafMax, breath, clicks },
           [spec.buffer]
         );
       }
@@ -548,6 +599,7 @@ if (typeof module !== 'undefined' && module.exports) {
     peakAbs,
     maxFrameRms,
     quietFrameRms,
+    detectClicks,
     aWeightingSections,
     createLevelMeter,
     createBreathMeter,

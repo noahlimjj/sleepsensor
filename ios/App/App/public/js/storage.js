@@ -203,6 +203,9 @@ export class Storage {
     if (typeof event.peakDbA === 'number') rec.peakDbA = event.peakDbA; // loudest, A-weighted
     if (typeof event.laeqDbA === 'number') rec.laeqDbA = event.laeqDbA; // average, A-weighted
     if (event.arousal) rec.arousal = event.arousal; // apnea: 'snort' | 'gasp' | 'arousal'
+    if (event.subtype) rec.subtype = event.subtype; // generic sound: 'movement' | 'buzz' | 'other'
+    if (typeof event.count === 'number') rec.count = event.count; // clicks in a click event
+    if (typeof event.nearGrind === 'boolean') rec.nearGrind = event.nearGrind; // click within 2 min of grinding
     const tx = this._tx('events', 'readwrite');
     tx.objectStore('events').put(rec);
     await this._done(tx);
