@@ -147,19 +147,20 @@ async function main() {
     console.log('\n▸ export + clear (with cancel)');
     await page.click('#nav-settings');
     await page.waitForTimeout(200);
+    const dl = page.waitForEvent('download', { timeout: 8000 }).catch(() => null);
     await page.click('#setting-export-btn');
-    await page.waitForSelector('#screen-report.active', { timeout: 4000 });
-    await page.waitForSelector('#night-clips [data-action="share-all"]', { timeout: 4000 }).catch(() => null);
-    const shareAll = page.locator('#night-clips [data-action="share-all"]');
-    if (await shareAll.count()) {
-      const dl = page.waitForEvent('download', { timeout: 6000 }).catch(() => null);
-      await shareAll.click();
-      check(!!(await dl), 'export night -> Share all produces downloads');
-    } else {
-      check((await page.locator('#night-clips .nc-summary').count()) === 1, 'export night opens the night panel (no clips)');
-    }
-    await page.click('#nav-settings');
-    await page.waitForTimeout(200);
+    const d = await dl;
+    check(!!d && /\.zip$/.test(d.suggestedFilename()), `export -> one zip download (${d && d.suggestedFilename()})`);
+    await page.waitForTimeout(300);
+    const st = await page.textContent('#setting-export-status');
+    check(/Downloaded|Nothing to export/.test(st || ''), `export status shown ("${(st || '').slice(0, 60)}")`);
+    check(!(await page.$eval('#setting-export-btn', (b) => b.disabled)), 'export button enabled again afterwards');
+    await page.click('#setting-cleanup-btn');
+    await page.waitForTimeout(800);
+    const cs = await page.textContent('#setting-cleanup-status').catch(() => '');
+    const dlg = await page.$eval('#confirm-dialog', (d) => d.open);
+    if (dlg) await page.click('#confirm-cancel');
+    check(dlg || /Nothing to clean/.test(cs || ''), 'clean-up: confirm dialog or "nothing to clean"');
     await page.click('#setting-clear-btn');
     await page.waitForTimeout(150);
     await page.click('#confirm-cancel');

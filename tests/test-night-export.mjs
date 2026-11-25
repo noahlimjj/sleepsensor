@@ -50,27 +50,39 @@ export async function run() {
   eq(log.session.listenGaps[0].reason, 'mic-silent', 'log carries listening gaps');
   eq(log.clips.length, 2, 'log lists the clip files');
 
-  // native path: chunked writes, byte-exact, then the share sheet
+  // native path: one zip saved to Files/Exports, then the share sheet
   {
     const native = fakeNative();
-    const r = await exportNight({ storage, native });
+    const stages = new Set();
+    const r = await exportNight({ storage, native, onProgress: (p) => stages.add(p.stage) });
     eq(r.how, 'native', 'iOS app uses the native share sheet');
-    eq(r.files, 3, 'three files shared');
+    eq(r.files, 3, 'zip holds log + 2 clips');
+    ok(r.name.endsWith('.zip'), `one zip (${r.name})`);
+    eq(r.savedTo, 'Files → On My iPhone → Sleep Sensor → Exports', 'reports where it was saved');
     eq(native.calls.share.length, 1, 'share sheet shown once');
-    eq(native.calls.share[0].names.length, 3, 'with every file');
-    const wav = native.fs.get(`export//${files[1].name}`);
-    const orig = Buffer.from(await files[1].blob.arrayBuffer());
-    ok(wav && wav.length === orig.length && wav.equals(orig), `WAV written byte-exact across chunks (${orig.length} B)`);
-    eq(wav.toString('ascii', 0, 4), 'RIFF', 'valid WAV header');
+    eq(native.calls.share[0].names.join(), r.name, 'with the zip');
+    const zip = native.fs.get(`nights/Exports/${r.name}`);
+    ok(zip && zip.readUInt32LE(0) === 0x04034b50, 'valid zip written byte-exact across chunks');
+    eq(zip.length, r.bytes, 'zip size matches');
+    ok(['clips', 'zip', 'save', 'share'].every((s) => stages.has(s)), 'progress through every stage');
+    // unzip check with the system tool
+    const { writeFileSync, mkdtempSync } = await import('fs');
+    const { execFileSync } = await import('child_process');
+    const dir = mkdtempSync('/tmp/ssz-');
+    writeFileSync(`${dir}/n.zip`, zip);
+    const list = execFileSync('unzip', ['-l', `${dir}/n.zip`]).toString();
+    ok(list.includes('log.json') && (list.match(/\.wav/g) || []).length === 2, 'unzip lists log + 2 WAVs');
+    execFileSync('unzip', ['-tq', `${dir}/n.zip`]);
+    ok(true, 'unzip -t: no CRC errors');
   }
 
-  // no native, no share: browser downloads each file
+  // no native, no share: browser downloads the zip
   {
     const clicked = [];
     const doc = { body: { appendChild() {} }, createElement: () => ({ style: {}, click() { clicked.push(this.download); }, remove() {} }) };
     const r = await exportNight({ storage, native: null, nav: null, doc });
     eq(r.how, 'download', 'desktop browser downloads');
-    eq(clicked.length, 3, 'one download per file');
+    eq(clicked.length, 1, 'one zip download');
   }
 
   // auto-save into Files, prune to 14 nights

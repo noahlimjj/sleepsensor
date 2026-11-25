@@ -21,6 +21,11 @@
  */
 
 import { normalizeWavBlob } from './loudness.js';
+import { makeZip } from './zip.js';
+
+const MAX_GENERIC_CLIPS = 40; // generic 'other' sounds: only the loudest go in an export
+export const EXPORTS_DIR = 'Exports';
+export const EXPORTS_PLACE = 'Files → On My iPhone → Sleep Sensor → Exports';
 
 const KEEP_NIGHTS = 14;
 const CHUNK = 384 * 1024; // bytes per bridge call (base64 ~512 KB)
@@ -43,7 +48,7 @@ function bytesToBase64(u8) {
 }
 
 /** [{ name, blob }] for one session: log JSON first, then its clips by time. */
-export async function nightFiles(storage, session, { clipIds = null, normalize = true } = {}) {
+export async function nightFiles(storage, session, { clipIds = null, normalize = true, onProgress = null } = {}) {
   const [events, highlights, clips] = await Promise.all([
     storage.getEventsBySession(session.id).catch(() => []),
     storage.getHighlightsBySession(session.id).catch(() => []),
@@ -54,8 +59,24 @@ export async function nightFiles(storage, session, { clipIds = null, normalize =
   const used = new Set();
   const clipNames = [];
   const want = clipIds ? new Set(clipIds) : null;
-  for (const c of clips) {
-    if (!c.audioBlob || (want && !want.has(c.id))) continue;
+  // old builds saved a clip for almost every breath: unless the user picked
+  // clips, export every specific sound but only the loudest generic ones
+  const evById = new Map(events.map((e) => [e.id, e]));
+  const generic = (c) => { const e = evById.get(c.eventId); return !!e && e.type === 'noise' && (!e.subtype || e.subtype === 'other'); };
+  const lv = (c) => { const e = evById.get(c.eventId) || {}; return e.peakDbA ?? e.peakDb ?? -99; };
+  let pick = clips.filter((c) => c.audioBlob && (!want || want.has(c.id)));
+  let skipped = 0;
+  if (!want) {
+    const gen = pick.filter(generic);
+    if (gen.length > MAX_GENERIC_CLIPS) {
+      const keep = new Set([...gen].sort((a, b) => lv(b) - lv(a)).slice(0, MAX_GENERIC_CLIPS).map((c) => c.id));
+      skipped = gen.length - keep.size;
+      pick = pick.filter((c) => !generic(c) || keep.has(c.id));
+    }
+  }
+  let done = 0;
+  for (const c of pick) {
+    if (onProgress) onProgress(done++, pick.length);
     let name = `${stamp} ${clock(c.timestamp)} ${c.clipType || 'event'}.${c.format || 'wav'}`;
     for (let k = 2; used.has(name); k++) name = name.replace(/( \d+)?\.(\w+)$/, ` ${k}.$2`);
     used.add(name);
@@ -73,68 +94,83 @@ export async function nightFiles(storage, session, { clipIds = null, normalize =
     files.push({ name, blob });
     clipNames.push({ file: name, eventId: c.eventId, clipType: c.clipType, timestamp: c.timestamp, duration: c.duration, gainDb });
   }
-  const log = { app: 'SleepSensor', exportedAt: new Date().toISOString(), audio: normalize ? 'clips normalised to -16 LUFS, peak -1 dBFS (gainDb per clip); originals unchanged on the phone' : 'original', session, events, highlights, clips: clipNames };
+  const log = { app: 'SleepSensor', exportedAt: new Date().toISOString(), skippedGenericClips: skipped, audio: normalize ? 'clips normalised to -16 LUFS, peak -1 dBFS (gainDb per clip); originals unchanged on the phone' : 'original', session, events, highlights, clips: clipNames };
   files.unshift({ name: `${stamp} log.json`, blob: new Blob([JSON.stringify(log, null, 1)], { type: 'application/json' }) });
   return files;
 }
 
-async function writeNative(native, kind, dir, file) {
+async function writeNative(native, kind, dir, file, onProgress = null) {
   const u8 = new Uint8Array(await file.blob.arrayBuffer());
   if (u8.length === 0) return native.writeFile({ kind, dir, name: file.name, data: '', append: false });
-  for (let off = 0; off < u8.length; off += CHUNK) {
+  const total = Math.ceil(u8.length / CHUNK);
+  for (let off = 0, i = 0; off < u8.length; off += CHUNK, i++) {
     await native.writeFile({ kind, dir, name: file.name, data: bytesToBase64(u8.subarray(off, off + CHUNK)), append: off > 0 });
+    if (onProgress) onProgress(i + 1, total);
   }
 }
 
 /** Latest night (or a given one) → share sheet. Returns { ok, how, files }. */
-export async function exportNight({ storage, native, sessionId = null, clipIds = null, nav = globalThis.navigator, doc = globalThis.document } = {}) {
+/**
+ * Latest night (or a given one) as ONE zip (log + clips): saved to
+ * Files → On My iPhone → Sleep Sensor → Exports, then the share sheet opens.
+ * onProgress({ stage: 'clips'|'zip'|'save'|'share', done, total })
+ */
+export async function exportNight({ storage, native, sessionId = null, clipIds = null, onProgress = null, nav = globalThis.navigator, doc = globalThis.document } = {}) {
   const sessions = await storage.getAllSessions();
   if (!sessions.length) return { ok: false, how: 'empty', files: 0 };
   const session = sessionId
     ? sessions.find((s) => s.id === sessionId)
     : sessions.reduce((a, b) => ((b.startTime || 0) > (a.startTime || 0) ? b : a));
   if (!session) return { ok: false, how: 'empty', files: 0 };
-  const files = await nightFiles(storage, session, { clipIds });
+  const step = (stage, done = 0, total = 0) => onProgress && onProgress({ stage, done, total });
+  const files = await nightFiles(storage, session, { clipIds, onProgress: (d, t) => step('clips', d, t) });
+  step('zip', 0, files.length);
+  const name = `SleepSensor ${nightStamp(session.startTime)}${clipIds ? ' selection' : ''}.zip`;
+  const zip = await makeZip(files, (d, t) => step('zip', d, t));
+  const info = { files: files.length, clips: files.length - 1, bytes: zip.size, name };
 
   if (native && native.canWriteFiles) {
-    await native.clearFiles({ kind: 'export' });
-    for (const f of files) await writeNative(native, 'export', null, f);
-    const r = await native.shareFiles({ kind: 'export', names: files.map((f) => f.name) });
-    return { ok: true, how: 'native', files: files.length, completed: !!(r && r.completed) };
+    step('save');
+    await writeNative(native, 'nights', EXPORTS_DIR, { name, blob: zip }, (d, t) => step('save', d, t));
+    step('share');
+    let completed = false;
+    try {
+      const r = await native.shareFiles({ kind: 'nights', dir: EXPORTS_DIR, names: [name] });
+      completed = !!(r && r.completed);
+    } catch (_) {
+      /* share sheet dismissed or unavailable: the file is saved anyway */
+    }
+    return { ok: true, how: 'native', savedTo: EXPORTS_PLACE, completed, ...info };
   }
 
   if (nav && nav.canShare && typeof File !== 'undefined') {
-    const asFiles = files.map((f) => new File([f.blob], f.name, { type: f.blob.type || 'application/octet-stream' }));
-    for (const set of [asFiles, asFiles.slice(0, 1)]) {
-      try {
-        if (nav.canShare({ files: set })) {
-          await nav.share({ title: 'SleepSensor night', files: set });
-          return { ok: true, how: 'share', files: set.length };
-        }
-      } catch (e) {
-        if (e && e.name === 'AbortError') return { ok: false, how: 'cancelled', files: 0 };
+    const file = new File([zip], name, { type: 'application/zip' });
+    try {
+      if (nav.canShare({ files: [file] })) {
+        step('share');
+        await nav.share({ title: 'SleepSensor night', files: [file] });
+        return { ok: true, how: 'share', ...info };
       }
+    } catch (e) {
+      if (e && e.name === 'AbortError') return { ok: false, how: 'cancelled', ...info };
     }
   }
 
-  // desktop browsers: one download per file
   if (doc && typeof URL !== 'undefined' && URL.createObjectURL) {
-    for (const f of files) {
-      const url = URL.createObjectURL(f.blob);
-      const a = doc.createElement('a');
-      a.href = url;
-      a.download = f.name;
-      a.style.display = 'none';
-      doc.body.appendChild(a);
-      a.click();
-      setTimeout(() => {
-        a.remove();
-        URL.revokeObjectURL(url);
-      }, 1500);
-    }
-    return { ok: true, how: 'download', files: files.length };
+    const url = URL.createObjectURL(zip);
+    const a = doc.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.style.display = 'none';
+    doc.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      a.remove();
+      URL.revokeObjectURL(url);
+    }, 1500);
+    return { ok: true, how: 'download', ...info };
   }
-  return { ok: false, how: 'unsupported', files: 0 };
+  return { ok: false, how: 'unsupported', ...info };
 }
 
 /** Copy a finished night to Files → On My iPhone → Sleep Sensor; keeps the last 14. */

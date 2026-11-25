@@ -811,6 +811,60 @@ class App {
     this._renderNightClips();
   }
 
+  /** Show a spinner + text on a button (null restores it). */
+  _btnBusy(btn, text) {
+    if (!btn) return;
+    const label = btn.querySelector('.setting-btn-label') || btn;
+    if (text) {
+      if (btn.dataset.idle == null) btn.dataset.idle = label.textContent;
+      btn.classList.add('is-busy');
+      btn.setAttribute('aria-busy', 'true');
+      label.textContent = text;
+    } else if (btn.dataset.idle != null) {
+      label.textContent = btn.dataset.idle;
+      delete btn.dataset.idle;
+      btn.classList.remove('is-busy');
+      btn.removeAttribute('aria-busy');
+    }
+  }
+
+  /** Export (zip) with progress on `btn`, result in `statusEl` (or a banner). */
+  async _runExport(btn, statusEl, { sessionId = null, clipIds = null } = {}) {
+    if (btn.classList.contains('is-busy')) return;
+    const say = (t) => {
+      if (statusEl) {
+        statusEl.textContent = t;
+        statusEl.hidden = false;
+      } else this._banner(t, { autoHideMs: 9000 });
+    };
+    btn.disabled = true;
+    this._btnBusy(btn, 'Preparing…');
+    try {
+      const { exportNight } = await import('./night-export.js');
+      const { nativeBridge } = await import('./native-bridge.js');
+      const r = await exportNight({
+        storage: this.storage, native: nativeBridge, sessionId, clipIds,
+        onProgress: ({ stage, done, total }) => {
+          const pct = total ? ` ${done}/${total}` : '';
+          this._btnBusy(btn, { clips: `Preparing clips…${pct}`, zip: 'Packing zip…', save: 'Saving to Files…', share: 'Opening share sheet…' }[stage] || 'Exporting…');
+        },
+      });
+      const mb = r.bytes ? ` (${(r.bytes / 1048576).toFixed(1)} MB, ${r.clips} clips)` : '';
+      if (r.how === 'empty') say('Nothing to export yet: record a night first.');
+      else if (r.how === 'native') say(`Saved "${r.name}"${mb} to ${r.savedTo}.${r.completed ? ' Shared.' : ''}`);
+      else if (r.how === 'share') say(`Shared "${r.name}"${mb}.`);
+      else if (r.how === 'download') say(`Downloaded "${r.name}"${mb}.`);
+      else if (r.how === 'cancelled') say('Export cancelled.');
+      else say('Export is not supported on this device.');
+    } catch (err) {
+      console.warn('export failed:', err);
+      say(`Export failed: ${(err && err.message) || err}`);
+    } finally {
+      this._btnBusy(btn, null);
+      btn.disabled = false;
+    }
+  }
+
   _renderNightClips() {
     const el = document.getElementById('night-clips');
     if (!el || !this._nc) return;
@@ -841,18 +895,8 @@ class App {
       const act = e.target.closest('[data-action]');
       if (act && !act.disabled) {
         const clipIds = act.dataset.action === 'share-selected' ? [...nc.selected] : null;
-        act.disabled = true;
-        try {
-          const { exportNight } = await import('./night-export.js');
-          const { nativeBridge } = await import('./native-bridge.js');
-          const r = await exportNight({ storage: this.storage, native: nativeBridge, sessionId: nc.sessionId, clipIds });
-          if (!r.ok && r.how !== 'cancelled') this._banner('Sharing is not supported here.', { autoHideMs: 6000 });
-        } catch (err) {
-          console.warn('share failed:', err);
-          this._banner(`Share failed: ${(err && err.message) || err}`, { autoHideMs: 8000 });
-        } finally {
-          act.disabled = act.dataset.action === 'share-selected' && !nc.selected.size;
-        }
+        await this._runExport(act, null, { sessionId: nc.sessionId, clipIds });
+        act.disabled = act.dataset.action === 'share-selected' && !nc.selected.size;
       }
     });
     el.addEventListener('change', (e) => {
@@ -1230,26 +1274,51 @@ class App {
       this._loadSampleSession();
     });
 
-    // Export: the latest night's log + audio clips via the share sheet
-    document.getElementById('setting-export-btn').addEventListener('click', async () => {
-      const btn = document.getElementById('setting-export-btn');
+    // Export: the latest night as one zip -> saved in Files, then the share sheet
+    document.getElementById('setting-export-btn').addEventListener('click', (e) => {
+      this._runExport(e.currentTarget, document.getElementById('setting-export-status'), {});
+    });
+
+    // Clean up the junk clips older builds saved for quiet breathing
+    document.getElementById('setting-cleanup-btn').addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      const status = document.getElementById('setting-cleanup-status');
+      const { cleanupJunk } = await import('./junk-cleanup.js');
       btn.disabled = true;
+      this._btnBusy(btn, 'Checking old nights…');
+      let found;
       try {
-        const sessions = await this.storage.getAllSessions();
-        if (!sessions.length) {
-          this._banner('Nothing to export yet: record a night first.', { autoHideMs: 5000 });
-          return;
-        }
-        const latest = sessions.reduce((a, b) => ((b.startTime || 0) > (a.startTime || 0) ? b : a));
-        this.currentSessionId = latest.id;
-        this._showScreen('report'); // loads the report on the next frame
-        setTimeout(() => document.getElementById('night-clips-section')?.scrollIntoView({ block: 'start' }), 400);
-      } catch (e) {
-        console.warn('export failed:', e);
-        this._banner(`Export failed: ${(e && e.message) || e}`, { autoHideMs: 8000 });
+        found = await cleanupJunk(this.storage);
       } finally {
+        this._btnBusy(btn, null);
         btn.disabled = false;
       }
+      if (!found.events) {
+        status.textContent = 'Nothing to clean: no junk clips found.';
+        status.hidden = false;
+        return;
+      }
+      this._showConfirm(
+        'Clean up junk clips?',
+        `Deletes ${found.events} quiet background "Noise" events and ${found.clips} clips from ${found.nights} night${found.nights === 1 ? '' : 's'}. Snoring, grinding, breathing pauses, clicks, movement, loudest moments and each night's 5 loudest sounds are kept.`,
+        async () => {
+          btn.disabled = true;
+          this._btnBusy(btn, 'Cleaning up…');
+          try {
+            const r = await cleanupJunk(this.storage, { apply: true });
+            status.textContent = `Removed ${r.events} junk events and ${r.clips} clips.`;
+            status.hidden = false;
+            this._updateStorageUsage();
+            if (this.currentSessionId) this._loadReport(this.currentSessionId).catch(() => {});
+          } catch (err) {
+            status.textContent = `Clean-up failed: ${(err && err.message) || err}`;
+            status.hidden = false;
+          } finally {
+            this._btnBusy(btn, null);
+            btn.disabled = false;
+          }
+        },
+      );
     });
 
     // Clear data

@@ -184,6 +184,14 @@ export class Storage {
     await this._done(tx);
   }
 
+  /** Delete events and clips by id in one transaction (junk cleanup). */
+  async deleteEventsAndClips(eventIds = [], clipIds = []) {
+    const tx = this._tx(['events', 'clips'], 'readwrite');
+    eventIds.forEach((id) => tx.objectStore('events').delete(id));
+    clipIds.forEach((id) => tx.objectStore('clips').delete(id));
+    await this._done(tx);
+  }
+
   // ---- events --------------------------------------------------------
   async addEvent(event) {
     const rec = {

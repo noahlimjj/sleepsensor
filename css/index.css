@@ -1452,3 +1452,15 @@ a {
 .nc-rr-line { fill: none; stroke: var(--apnea); stroke-width: 2; vector-effect: non-scaling-stroke; }
 .nc-rr-label { fill: var(--mid-light); font-size: 24px; }
 .nc-rr-label--end { text-anchor: end; }
+
+/* busy buttons (export / clean-up): spinner + progress text, clearly not "greyed out" */
+.setting-btn.is-busy, .nc-btn.is-busy { opacity: 1; }
+.setting-btn.is-busy svg { display: none; }
+.setting-btn.is-busy::before, .nc-btn.is-busy::before {
+  content: ''; width: 18px; height: 18px; flex-shrink: 0; border-radius: 50%;
+  border: 2px solid var(--mid); border-top-color: var(--white); animation: ss-spin 0.8s linear infinite;
+}
+.nc-btn.is-busy { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+.nc-btn--primary.is-busy::before { border-color: var(--light); border-top-color: var(--black); }
+@keyframes ss-spin { to { transform: rotate(360deg); } }
+.setting-hint { font-size: 0.8rem; color: var(--mid-light); margin: 6px 0 0 32px; line-height: 1.4; }
