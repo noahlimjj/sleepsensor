@@ -16,6 +16,8 @@ import { run as engine } from './test-engine.mjs';
 import { run as apnea } from './test-apnea.mjs';
 import { run as listening } from './test-listening.mjs';
 import { run as nightExport } from './test-night-export.mjs';
+import { run as loudness } from './test-loudness.mjs';
+import { run as nightClips } from './test-night-clips.mjs';
 
 console.log('SleepSensor backend test suite');
 console.log('='.repeat(48));
@@ -37,6 +39,8 @@ try {
   await apnea();
   await listening();
   await nightExport();
+  await loudness();
+  await nightClips();
 } catch (err) {
   console.error('\nFATAL:', err);
   process.exit(1);

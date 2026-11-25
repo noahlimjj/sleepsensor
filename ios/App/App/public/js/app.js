@@ -6,6 +6,8 @@
 import { formatDuration, formatTimer, formatTime, formatDate, formatBytes, toDateKey, getMonthAbbr, getDayOfMonth, toPercent, roundRectPath, waveformLevel } from './utils.js';
 import { Timeline } from './timeline.js';
 import { ApneaDetector } from './apnea-detector.js';
+import { buildNightModel, renderNightClips } from './night-clips.js';
+import { normalizeWavBlob } from './loudness.js';
 import { DonutChart, TrendChart } from './charts.js';
 import { SessionRecovery } from './session-recovery.js';
 import { authManager } from './auth.js';
@@ -113,6 +115,7 @@ class App {
       this._bindNavigation();
       this._bindRecordButton();
       this._bindSettings();
+      this._bindNightClips();
 
       // Show app
       this._hideSplash();
@@ -794,14 +797,71 @@ class App {
     // Severity breakdown (snoring / grinding / noise intensity — pauses have their own card)
     this._renderSeverityBars(events.filter((e) => e.type !== 'apnea'));
 
-    // Event audio clips (highlight clips are shown in the Loudest Moments section)
-    const clips = await this.storage.getClipsBySessionType(sessionId, 'event');
-    this._renderClips(clips, events);
+    // Night clips: summary, timeline, clips grouped by kind, share
+    const [highlights, clips] = await Promise.all([
+      this.storage.getHighlightsBySession(sessionId),
+      this.storage.getClipsBySession(sessionId),
+    ]);
+    this._nc = {
+      sessionId,
+      model: buildNightModel({ session, events, highlights, clips }),
+      expanded: new Set(),
+      selected: new Set(),
+    };
+    this._renderNightClips();
+  }
 
-    // Loudest moments
-    const highlights = await this.storage.getHighlightsBySession(sessionId);
-    const highlightClips = await this.storage.getClipsBySessionType(sessionId, 'highlight');
-    this._renderHighlights(highlights, highlightClips);
+  _renderNightClips() {
+    const el = document.getElementById('night-clips');
+    if (!el || !this._nc) return;
+    this._stopCurrentClip();
+    el.innerHTML = renderNightClips(this._nc.model, { ...this._nc, playIcon: this._playIcon() });
+  }
+
+  _bindNightClips() {
+    const el = document.getElementById('night-clips');
+    if (!el || el._bound) return;
+    el._bound = true;
+    el.addEventListener('click', async (e) => {
+      const nc = this._nc;
+      if (!nc) return;
+      const play = e.target.closest('.nc-play');
+      if (play) {
+        e.preventDefault();
+        this._playClip(play.dataset.clipId, play);
+        return;
+      }
+      const tog = e.target.closest('[data-toggle]');
+      if (tog) {
+        const k = tog.dataset.toggle;
+        nc.expanded.has(k) ? nc.expanded.delete(k) : nc.expanded.add(k);
+        this._renderNightClips();
+        return;
+      }
+      const act = e.target.closest('[data-action]');
+      if (act && !act.disabled) {
+        const clipIds = act.dataset.action === 'share-selected' ? [...nc.selected] : null;
+        act.disabled = true;
+        try {
+          const { exportNight } = await import('./night-export.js');
+          const { nativeBridge } = await import('./native-bridge.js');
+          const r = await exportNight({ storage: this.storage, native: nativeBridge, sessionId: nc.sessionId, clipIds });
+          if (!r.ok && r.how !== 'cancelled') this._banner('Sharing is not supported here.', { autoHideMs: 6000 });
+        } catch (err) {
+          console.warn('share failed:', err);
+          this._banner(`Share failed: ${(err && err.message) || err}`, { autoHideMs: 8000 });
+        } finally {
+          act.disabled = act.dataset.action === 'share-selected' && !nc.selected.size;
+        }
+      }
+    });
+    el.addEventListener('change', (e) => {
+      const box = e.target.closest('input[data-select]');
+      if (!box || !this._nc) return;
+      const id = box.dataset.select;
+      box.checked ? this._nc.selected.add(id) : this._nc.selected.delete(id);
+      this._renderNightClips();
+    });
   }
 
   _renderBreathing(m) {
@@ -976,7 +1036,21 @@ class App {
     const clip = await this.storage.getClip(clipId);
     if (!clip || !clip.audioBlob) return;
 
-    const url = URL.createObjectURL(clip.audioBlob);
+    // play a loudness-normalised copy (-16 LUFS, peaks <= -1 dBFS); the stored clip is untouched
+    let blob = clip.audioBlob;
+    try {
+      this._loudCache = this._loudCache || new Map();
+      if (!this._loudCache.has(clipId)) {
+        if (this._loudCache.size > 30) this._loudCache.clear();
+        this._loudCache.set(clipId, (await normalizeWavBlob(clip.audioBlob)).blob);
+      }
+      blob = this._loudCache.get(clipId);
+    } catch (e) {
+      console.warn('normalise failed, playing original:', e && e.message);
+    }
+    if (this.currentPlayBtn || this.currentAudio) this._stopCurrentClip(); // another tap while decoding
+
+    const url = URL.createObjectURL(blob);
     this._currentUrl = url;
     this.currentAudio = new Audio(url);
     this.currentPlayBtn = btnEl;
@@ -1161,11 +1235,15 @@ class App {
       const btn = document.getElementById('setting-export-btn');
       btn.disabled = true;
       try {
-        const { exportNight } = await import('./night-export.js');
-        const { nativeBridge } = await import('./native-bridge.js');
-        const r = await exportNight({ storage: this.storage, native: nativeBridge });
-        if (r.how === 'empty') this._banner('Nothing to export yet: record a night first.', { autoHideMs: 5000 });
-        else if (!r.ok && r.how !== 'cancelled') this._banner('Export is not supported here.', { autoHideMs: 6000 });
+        const sessions = await this.storage.getAllSessions();
+        if (!sessions.length) {
+          this._banner('Nothing to export yet: record a night first.', { autoHideMs: 5000 });
+          return;
+        }
+        const latest = sessions.reduce((a, b) => ((b.startTime || 0) > (a.startTime || 0) ? b : a));
+        this.currentSessionId = latest.id;
+        this._showScreen('report'); // loads the report on the next frame
+        setTimeout(() => document.getElementById('night-clips-section')?.scrollIntoView({ block: 'start' }), 400);
       } catch (e) {
         console.warn('export failed:', e);
         this._banner(`Export failed: ${(e && e.message) || e}`, { autoHideMs: 8000 });

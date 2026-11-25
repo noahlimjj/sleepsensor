@@ -147,9 +147,19 @@ async function main() {
     console.log('\n▸ export + clear (with cancel)');
     await page.click('#nav-settings');
     await page.waitForTimeout(200);
-    const dl = page.waitForEvent('download', { timeout: 4000 }).catch(() => null);
     await page.click('#setting-export-btn');
-    check(!!(await dl), 'export produces a download');
+    await page.waitForSelector('#screen-report.active', { timeout: 4000 });
+    await page.waitForSelector('#night-clips [data-action="share-all"]', { timeout: 4000 }).catch(() => null);
+    const shareAll = page.locator('#night-clips [data-action="share-all"]');
+    if (await shareAll.count()) {
+      const dl = page.waitForEvent('download', { timeout: 6000 }).catch(() => null);
+      await shareAll.click();
+      check(!!(await dl), 'export night -> Share all produces downloads');
+    } else {
+      check((await page.locator('#night-clips .nc-summary').count()) === 1, 'export night opens the night panel (no clips)');
+    }
+    await page.click('#nav-settings');
+    await page.waitForTimeout(200);
     await page.click('#setting-clear-btn');
     await page.waitForTimeout(150);
     await page.click('#confirm-cancel');

@@ -13,8 +13,14 @@
  *   autoSaveNight() After every night, a copy lands in the app's Documents
  *                   folder: Files → On My iPhone → Sleep Sensor. No button.
  *
+ * Clips are exported loudness-normalised (-16 LUFS, peaks <= -1 dBFS, see
+ * loudness.js) so they are easy to hear; the stored recordings are untouched
+ * and the log records the gain applied to each file.
+ *
  * Everything stays on the device unless the user shares it.
  */
+
+import { normalizeWavBlob } from './loudness.js';
 
 const KEEP_NIGHTS = 14;
 const CHUNK = 384 * 1024; // bytes per bridge call (base64 ~512 KB)
@@ -37,7 +43,7 @@ function bytesToBase64(u8) {
 }
 
 /** [{ name, blob }] for one session: log JSON first, then its clips by time. */
-export async function nightFiles(storage, session) {
+export async function nightFiles(storage, session, { clipIds = null, normalize = true } = {}) {
   const [events, highlights, clips] = await Promise.all([
     storage.getEventsBySession(session.id).catch(() => []),
     storage.getHighlightsBySession(session.id).catch(() => []),
@@ -47,15 +53,27 @@ export async function nightFiles(storage, session) {
   const files = [];
   const used = new Set();
   const clipNames = [];
+  const want = clipIds ? new Set(clipIds) : null;
   for (const c of clips) {
-    if (!c.audioBlob) continue;
+    if (!c.audioBlob || (want && !want.has(c.id))) continue;
     let name = `${stamp} ${clock(c.timestamp)} ${c.clipType || 'event'}.${c.format || 'wav'}`;
     for (let k = 2; used.has(name); k++) name = name.replace(/( \d+)?\.(\w+)$/, ` ${k}.$2`);
     used.add(name);
-    files.push({ name, blob: c.audioBlob });
-    clipNames.push({ file: name, eventId: c.eventId, clipType: c.clipType, timestamp: c.timestamp, duration: c.duration });
+    let blob = c.audioBlob;
+    let gainDb = 0;
+    if (normalize) {
+      try {
+        const r = await normalizeWavBlob(c.audioBlob);
+        blob = r.blob;
+        gainDb = Math.round(r.gainDb * 10) / 10;
+      } catch (_) {
+        /* not a decodable WAV: export the original */
+      }
+    }
+    files.push({ name, blob });
+    clipNames.push({ file: name, eventId: c.eventId, clipType: c.clipType, timestamp: c.timestamp, duration: c.duration, gainDb });
   }
-  const log = { app: 'SleepSensor', exportedAt: new Date().toISOString(), session, events, highlights, clips: clipNames };
+  const log = { app: 'SleepSensor', exportedAt: new Date().toISOString(), audio: normalize ? 'clips normalised to -16 LUFS, peak -1 dBFS (gainDb per clip); originals unchanged on the phone' : 'original', session, events, highlights, clips: clipNames };
   files.unshift({ name: `${stamp} log.json`, blob: new Blob([JSON.stringify(log, null, 1)], { type: 'application/json' }) });
   return files;
 }
@@ -69,13 +87,14 @@ async function writeNative(native, kind, dir, file) {
 }
 
 /** Latest night (or a given one) → share sheet. Returns { ok, how, files }. */
-export async function exportNight({ storage, native, sessionId = null, nav = globalThis.navigator, doc = globalThis.document } = {}) {
+export async function exportNight({ storage, native, sessionId = null, clipIds = null, nav = globalThis.navigator, doc = globalThis.document } = {}) {
   const sessions = await storage.getAllSessions();
   if (!sessions.length) return { ok: false, how: 'empty', files: 0 };
   const session = sessionId
     ? sessions.find((s) => s.id === sessionId)
     : sessions.reduce((a, b) => ((b.startTime || 0) > (a.startTime || 0) ? b : a));
-  const files = await nightFiles(storage, session);
+  if (!session) return { ok: false, how: 'empty', files: 0 };
+  const files = await nightFiles(storage, session, { clipIds });
 
   if (native && native.canWriteFiles) {
     await native.clearFiles({ kind: 'export' });

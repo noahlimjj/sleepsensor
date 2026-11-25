@@ -293,27 +293,11 @@
           </div>
         </section>
 
-        <!-- Loudest Highlights -->
-        <section class="report-section">
-          <h2 class="section-title">Loudest Moments</h2>
-          <div class="carousel-container">
-            <div class="highlights-carousel" id="highlights-carousel">
-              <!-- Filled by JS -->
-            </div>
-            <div id="highlights-empty" class="empty-state empty-state--small">
-              <p>No highlights captured this session</p>
-            </div>
-          </div>
-        </section>
-
-        <!-- Detected-event clips -->
-        <section class="report-section">
-          <h2 class="section-title">Snoring &amp; Grinding Clips</h2>
-          <div class="clips-list" id="clips-list">
-            <!-- Filled by JS -->
-          </div>
-          <div id="clips-empty" class="empty-state empty-state--small">
-            <p>No snoring or grinding clips this session</p>
+        <!-- Night clips: summary, timeline, grouped clips, share -->
+        <section class="report-section" id="night-clips-section">
+          <h2 class="section-title">Night clips</h2>
+          <div class="night-clips" id="night-clips">
+            <!-- Filled by JS (night-clips.js) -->
           </div>
         </section>
       </div>
@@ -454,7 +438,7 @@
         <div class="setting-row setting-row--action">
           <button class="setting-btn" id="setting-export-btn">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            Export last night (log + audio)
+            Export night (clips + log)
           </button>
         </div>
         <div class="setting-row setting-row--action">

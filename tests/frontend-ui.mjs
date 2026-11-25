@@ -113,9 +113,10 @@ async function main() {
     check(tlCanvas.w > 0 && tlCanvas.h > 0, `timeline canvas sized (${tlCanvas.w}x${tlCanvas.h})`);
     const sevRows = await page.locator('.severity-bar-row').count();
     check(sevRows === 3, 'severity breakdown rendered (3 rows)');
-    const clipCards = await page.locator('#clips-list .clip-card').count();
-    const hlCards = await page.locator('#highlights-carousel .highlight-card').count();
-    check(clipCards + hlCards >= 1, `clips/highlights rendered (${clipCards} clips, ${hlCards} highlights)`);
+    const ncRows = await page.locator('#night-clips .nc-row').count();
+    check(ncRows >= 1, `night clips rendered (${ncRows} rows)`);
+    check((await page.locator('#night-clips .nc-stat').count()) === 4, 'night summary: 4 stats');
+    check((await page.locator('#night-clips svg.nc-timeline').count()) === 1, 'night timeline chart');
 
     // play a clip if present
     const anyPlay = page.locator('.clip-play-btn').first();
