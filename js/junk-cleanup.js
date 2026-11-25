@@ -11,7 +11,8 @@
 
 const STANDOUT_DB = 8;
 const KEEP_LOUDEST = 5;
-const MIN_TO_FILTER = 6; // nights with only a few generic sounds are left alone
+const MIN_TO_FILTER = 6;
+const WEAK_PAUSE = 0.6; // breathing pauses below this are mostly false on ordinary nights // nights with only a few generic sounds are left alone
 
 const isGeneric = (e) => e.type === 'noise' && (!e.subtype || e.subtype === 'other');
 const level = (e) => (typeof e.peakDbA === 'number' ? e.peakDbA : typeof e.peakDb === 'number' ? e.peakDb : null);
@@ -35,12 +36,15 @@ export async function cleanupJunk(storage, { apply = false } = {}) {
   for (const s of sessions) {
     const evs = await storage.getEventsBySession(s.id);
     const { ids, seconds } = findJunk(evs);
-    if (!ids.length) continue;
+    const anyWeak = evs.some((e) => e.type === 'apnea' && (e.confidence ?? 0) < WEAK_PAUSE && e.hasClip);
+    if (!ids.length && !anyWeak) continue;
     nights += 1;
     events += ids.length;
     const set = new Set(ids);
     const sessClips = await storage.getClipsBySession(s.id);
-    const clipIds = sessClips.filter((c) => set.has(c.eventId)).map((c) => c.id);
+    // clips of unlikely breathing pauses go too (the events stay: they feed the hourly estimate)
+    const weakPause = new Set(evs.filter((e) => e.type === 'apnea' && (e.confidence ?? 0) < WEAK_PAUSE).map((e) => e.id));
+    const clipIds = sessClips.filter((c) => set.has(c.eventId) || weakPause.has(c.eventId)).map((c) => c.id);
     clips += clipIds.length;
     if (apply) {
       await storage.deleteEventsAndClips(ids, clipIds);

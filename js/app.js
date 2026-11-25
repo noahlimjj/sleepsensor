@@ -792,7 +792,7 @@ class App {
     this.timeline.render(session, events);
 
     // Breathing pauses (estimated AHI) and their link to grinding
-    this._renderBreathing(ApneaDetector.calculateAhiMetrics(events, totalSleep));
+    this._renderBreathing(ApneaDetector.calculateAhiMetrics(events, totalSleep), events.filter((e) => e.type === 'apnea' && (e.confidence ?? 0) >= 0.6).length);
 
     // Severity breakdown (snoring / grinding / noise intensity — pauses have their own card)
     this._renderSeverityBars(events.filter((e) => e.type !== 'apnea'));
@@ -908,11 +908,12 @@ class App {
     });
   }
 
-  _renderBreathing(m) {
+  _renderBreathing(m, likely = m.apneaEvents) {
     document.getElementById('report-ahi').textContent = String(m.estimatedAhi);
+    // the hourly estimate uses every candidate (that is what was validated);
+    // single pauses are only named when likely
     document.getElementById('report-ahi-sub').textContent =
-      `${m.severityLabel} · ${m.apneaEvents} pause${m.apneaEvents === 1 ? '' : 's'}` +
-      (m.apneaEvents ? ` · longest ${Math.round(m.longestPauseSec)}s` : '');
+      `${m.severityLabel} (estimate) · ${likely} likely pause${likely === 1 ? '' : 's'}`;
     const list = document.getElementById('respiratory-insights');
     list.innerHTML = '';
     for (const line of ApneaDetector.describeMetrics(m)) {

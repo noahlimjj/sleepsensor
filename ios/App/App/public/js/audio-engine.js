@@ -93,6 +93,10 @@ const HIGHLIGHT_PAD_SEC = 3;
 
 // breathing-pause clips: the tail of the pause plus the snort/gasp that ends it
 const APNEA_CLIP_LEAD_SEC = 20;
+// single pauses are unreliable on ordinary nights (PSG-Audio, nights with AHI
+// < 15: ~1 in 10 flagged pauses is real at the counting cut-off). All candidates
+// still feed the hourly estimate (the validated number); only likely ones get a clip
+export const APNEA_SHOW_PROB = 0.6;
 const APNEA_CLIP_TAIL_SEC = 8; // the recovery breaths; detection fires ~30 s later, so this audio exists
 
 // background-resilience watchdog
@@ -1037,7 +1041,7 @@ export class AudioEngine {
     this._tally.apneaEvents += 1;
     this._tally.apneaDuration += ev.duration;
 
-    if (this.workletNode) {
+    if (this.workletNode && (ev.confidence ?? 0) >= APNEA_SHOW_PROB) {
       const onsetCtx = this._wallToCtx(ev.endTime);
       this._clipQueue.push({ kind: 'event', id: eventId, sessionId });
       this.workletNode.port.postMessage({

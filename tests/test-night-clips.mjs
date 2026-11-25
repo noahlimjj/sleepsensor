@@ -13,7 +13,9 @@ export async function run() {
   }
   events.push({ id: 'g1', type: 'bruxism', timestamp: t0 + 5.8 * H, duration: 14 });
   clips.push({ id: 'cg1', eventId: 'g1', clipType: 'event', timestamp: t0 + 5.8 * H, duration: 24 });
-  events.push({ id: 'a1', type: 'apnea', timestamp: t0 + 5.85 * H, duration: 18 });
+  events.push({ id: 'a1', type: 'apnea', timestamp: t0 + 5.85 * H, duration: 18, confidence: 0.72 });
+  events.push({ id: 'a2', type: 'apnea', timestamp: t0 + 3 * H, duration: 12, confidence: 0.35 }); // unlikely: hidden
+  clips.push({ id: 'ca2', eventId: 'a2', clipType: 'event', timestamp: t0 + 3 * H, duration: 20 });
   clips.push({ id: 'ca1', eventId: 'a1', clipType: 'event', timestamp: t0 + 5.85 * H, duration: 26 });
   const highlights = [{ id: 'h1', timestamp: t0 + 2 * H, classifiedAs: 'noise', db: -20 }];
   clips.push({ id: 'ch1', eventId: 'h1', clipType: 'highlight', timestamp: t0 + 2 * H, duration: 6 });
@@ -22,6 +24,7 @@ export async function run() {
   eq(kindOf('bruxism'), 'grind', 'bruxism -> grind');
   eq(kindOf('speech'), 'talk', 'speech -> talk');
   const m = buildNightModel({ session, events, highlights, clips });
+  ok(!m.items.some((i) => i.clipId === 'ca2'), 'unlikely breathing pause (p < 0.6) not listed');
   eq(m.groups.map((g) => g.key).join(','), 'snore,grind,apnea,other', 'groups in kind order, empty kinds hidden');
   const snore = m.groups[0];
   eq(snore.clips, 12, 'all snoring clips grouped');

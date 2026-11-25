@@ -14,7 +14,7 @@ export const KINDS = [
   { key: 'snore', label: 'Snoring', color: 'var(--nc-snore)' },
   { key: 'grind', label: 'Grinding', color: 'var(--nc-grind)' },
   { key: 'click', label: 'Clicks / snaps', color: 'var(--nc-click)' },
-  { key: 'apnea', label: 'Breathing pauses', color: 'var(--nc-apnea)' },
+  { key: 'apnea', label: 'Possible breathing pauses', color: 'var(--nc-apnea)' },
   { key: 'movement', label: 'Movement', color: 'var(--nc-move)' },
   { key: 'buzz', label: 'Buzzing', color: 'var(--nc-buzz)' },
   { key: 'talk', label: 'Talking', color: 'var(--nc-talk)' },
@@ -54,11 +54,18 @@ export function dur(sec) {
 }
 
 /** Build the panel model from storage rows. */
-export function buildNightModel({ session, events = [], highlights = [], clips = [] }) {
+// single pauses below this probability are mostly false on ordinary nights:
+// they count towards the hourly estimate but are not listed (see audio-engine)
+export const APNEA_SHOW_PROB = 0.6;
+
+export function buildNightModel({ session, events: allEvents = [], highlights = [], clips = [] }) {
+  const events = allEvents.filter((e) => e.type !== 'apnea' || (e.confidence ?? 0) >= APNEA_SHOW_PROB);
   const evById = new Map(events.map((e) => [e.id, e]));
   const hlById = new Map(highlights.map((h) => [h.id, h]));
   const items = [];
+  const hidden = new Set(allEvents.filter((e) => !events.includes(e)).map((e) => e.id));
   for (const c of clips) {
+    if (hidden.has(c.eventId)) continue;
     const ev = evById.get(c.eventId);
     const hl = hlById.get(c.eventId);
     const type = ev ? ev.type : hl ? hl.classifiedAs : 'noise';
@@ -108,7 +115,7 @@ export function buildNightModel({ session, events = [], highlights = [], clips =
     length: (end - start) / 1000,
     snoreSec: session.snoringDuration ?? secs('snore'),
     grindSec: session.bruxismDuration ?? secs('grind'),
-    pauses: session.apneaEvents ?? count('apnea'),
+    pauses: count('apnea'),
     other: count('other') + count('talk') + count('movement') + count('buzz'),
     micOffSec: session.deafSec || 0,
     clips: items.length,
