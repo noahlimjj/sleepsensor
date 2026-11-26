@@ -39,12 +39,13 @@ export async function run() {
   ok(collapsed.includes('Show all 12'), 'show-all button for snoring');
   ok(collapsed.includes('nc-timeline') && collapsed.includes('nc-gap'), 'timeline with mic-off gap');
   ok(collapsed.includes('Share all (15)'), 'share all');
-  ok(/data-action="share-selected" disabled/.test(collapsed), 'share selected disabled with nothing selected');
+  ok(/data-action="share-selected" disabled/.test(collapsed) && collapsed.includes('Select clips to share'), 'share selected disabled with nothing selected');
   ok(collapsed.includes('mic off'), 'summary warns about mic off');
 
   const open = renderNightClips(m, { expanded: new Set(['snore']), selected: new Set(['cs1', 'cg1']) });
   eq((open.match(/class="nc-row/g) || []).length, 12 + 3, 'expanded snoring lists all 12');
-  ok(open.includes('Share selected (2)'), 'selection count on share');
+  ok(open.includes('Share 2 clips (.wav)'), 'selection count on share');
+  ok(open.includes('data-action="select-all"') && open.includes('>Clear<'), 'select all / clear toggle');
   ok(open.includes('Show less'), 'collapse button');
   ok(!renderNightClips(buildNightModel({ session, events: [], highlights: [], clips: [] })).includes('nc-row'), 'empty night: no rows');
   pass('night clips are grouped, summarised and compact');

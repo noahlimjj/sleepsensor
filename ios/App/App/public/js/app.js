@@ -792,7 +792,11 @@ class App {
     this.timeline.render(session, events);
 
     // Breathing pauses (estimated AHI) and their link to grinding
-    this._renderBreathing(ApneaDetector.calculateAhiMetrics(events, totalSleep), events.filter((e) => e.type === 'apnea' && (e.confidence ?? 0) >= 0.6).length);
+    // newer nights measure pauses only over time with audible breathing
+    const audible = typeof session.breathAudibleSec === 'number' ? session.breathAudibleSec : null;
+    const ahiM = ApneaDetector.calculateAhiMetrics(events, audible != null ? audible : totalSleep);
+    if (audible != null && audible < 1800) ahiM.unknown = true;
+    this._renderBreathing(ahiM, events.filter((e) => e.type === 'apnea' && (e.confidence ?? 0) >= 0.6).length);
 
     // Severity breakdown (snoring / grinding / noise intensity — pauses have their own card)
     this._renderSeverityBars(events.filter((e) => e.type !== 'apnea'));
@@ -807,6 +811,7 @@ class App {
       model: buildNightModel({ session, events, highlights, clips }),
       expanded: new Set(),
       selected: new Set(),
+      showFiltered: false,
     };
     this._renderNightClips();
   }
@@ -829,7 +834,7 @@ class App {
   }
 
   /** Export (zip) with progress on `btn`, result in `statusEl` (or a banner). */
-  async _runExport(btn, statusEl, { sessionId = null, clipIds = null } = {}) {
+  async _runExport(btn, statusEl, { sessionId = null, clipIds = null, filesOnly = false } = {}) {
     if (btn.classList.contains('is-busy')) return;
     const say = (t) => {
       if (statusEl) {
@@ -843,7 +848,7 @@ class App {
       const { exportNight } = await import('./night-export.js');
       const { nativeBridge } = await import('./native-bridge.js');
       const r = await exportNight({
-        storage: this.storage, native: nativeBridge, sessionId, clipIds,
+        storage: this.storage, native: nativeBridge, sessionId, clipIds, filesOnly,
         onProgress: ({ stage, done, total }) => {
           const pct = total ? ` ${done}/${total}` : '';
           this._btnBusy(btn, { clips: `Preparing clips…${pct}`, zip: 'Packing zip…', save: 'Saving to Files…', share: 'Opening share sheet…' }[stage] || 'Exporting…');
@@ -851,6 +856,7 @@ class App {
       });
       const mb = r.bytes ? ` (${(r.bytes / 1048576).toFixed(1)} MB, ${r.clips} clips)` : '';
       if (r.how === 'empty') say('Nothing to export yet: record a night first.');
+      else if (r.how === 'native-files') say(`${r.completed ? 'Shared' : 'Ready to share'}: ${r.name} (.wav).`);
       else if (r.how === 'native') say(`Saved "${r.name}"${mb} to ${r.savedTo}.${r.completed ? ' Shared.' : ''}`);
       else if (r.how === 'share') say(`Shared "${r.name}"${mb}.`);
       else if (r.how === 'download') say(`Downloaded "${r.name}"${mb}.`);
@@ -885,6 +891,11 @@ class App {
         this._playClip(play.dataset.clipId, play);
         return;
       }
+      if (e.target.closest('[data-toggle-filtered]')) {
+        nc.showFiltered = !nc.showFiltered;
+        this._renderNightClips();
+        return;
+      }
       const tog = e.target.closest('[data-toggle]');
       if (tog) {
         const k = tog.dataset.toggle;
@@ -893,9 +904,15 @@ class App {
         return;
       }
       const act = e.target.closest('[data-action]');
+      if (act && act.dataset.action === 'select-all') {
+        if (nc.selected.size) nc.selected.clear();
+        else [...nc.model.items, ...(nc.showFiltered ? nc.model.filtered || [] : [])].forEach((i) => nc.selected.add(i.clipId));
+        this._renderNightClips();
+        return;
+      }
       if (act && !act.disabled) {
         const clipIds = act.dataset.action === 'share-selected' ? [...nc.selected] : null;
-        await this._runExport(act, null, { sessionId: nc.sessionId, clipIds });
+        await this._runExport(act, null, { sessionId: nc.sessionId, clipIds, filesOnly: !!clipIds });
         act.disabled = act.dataset.action === 'share-selected' && !nc.selected.size;
       }
     });
@@ -909,6 +926,13 @@ class App {
   }
 
   _renderBreathing(m, likely = m.apneaEvents) {
+    if (m.unknown) {
+      document.getElementById('report-ahi').textContent = '–';
+      document.getElementById('report-ahi-sub').textContent = 'Breathing too quiet to hear: pauses not judged';
+      const list = document.getElementById('respiratory-insights');
+      list.innerHTML = '<li>The phone heard clear breathing for under 30 minutes, so breathing pauses could not be measured. Place the phone closer (within about 1 m of your head).</li>';
+      return;
+    }
     document.getElementById('report-ahi').textContent = String(m.estimatedAhi);
     // the hourly estimate uses every candidate (that is what was validated);
     // single pauses are only named when likely
@@ -1295,19 +1319,19 @@ class App {
         btn.disabled = false;
       }
       if (!found.events) {
-        status.textContent = 'Nothing to clean: no junk clips found.';
+        status.textContent = 'Nothing to hide: no junk clips found.';
         status.hidden = false;
         return;
       }
       this._showConfirm(
-        'Clean up junk clips?',
-        `Deletes ${found.events} quiet background "Noise" events and ${found.clips} clips from ${found.nights} night${found.nights === 1 ? '' : 's'}. Snoring, grinding, breathing pauses, clicks, movement, loudest moments and each night's 5 loudest sounds are kept.`,
+        'Hide junk clips?',
+        `Hides ${found.events} quiet background "Noise" clips on ${found.nights} night${found.nights === 1 ? '' : 's'}. Nothing is deleted: tap "Show filtered-out" on a night to hear them. Snoring, grinding, pauses, clicks, movement and each night's 5 loudest sounds stay in the list.`,
         async () => {
           btn.disabled = true;
-          this._btnBusy(btn, 'Cleaning up…');
+          this._btnBusy(btn, 'Hiding…');
           try {
             const r = await cleanupJunk(this.storage, { apply: true });
-            status.textContent = `Removed ${r.events} junk events and ${r.clips} clips.`;
+            status.textContent = `Hid ${r.events} junk clips (still on the phone: Show filtered-out on each night).`;
             status.hidden = false;
             this._updateStorageUsage();
             if (this.currentSessionId) this._loadReport(this.currentSessionId).catch(() => {});

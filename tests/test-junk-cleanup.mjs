@@ -30,10 +30,23 @@ export async function run() {
   eq(dry.events, 36, 'dry run counts junk');
   eq((await storage.getEventsBySession(s.id)).length, night.length, 'dry run deletes nothing');
   const r = await cleanupJunk(storage, { apply: true });
-  eq(r.clips, 36, 'junk clips deleted');
-  eq((await storage.getEventsBySession(s.id)).length, night.length - 36, 'junk events deleted');
-  eq((await storage.getClipsBySession(s.id)).length, night.length - 36, 'their clips too');
-  eq((await storage.getSession(s.id)).noiseEpisodes, 5, 'session noise count updated');
+  eq(r.events, 36, 'junk marked');
+  const after = await storage.getEventsBySession(s.id);
+  eq(after.length, night.length, 'NOTHING deleted: events all still there');
+  eq((await storage.getClipsBySession(s.id)).length, night.length, 'clips all still there');
+  eq(after.filter((e) => e.filtered === 'junk').length, 36, 'junk only marked filtered');
+  eq((await cleanupJunk(storage)).events, 0, 'running it again finds nothing new');
   await storage.deleteSession(s.id);
-  pass('old junk clips are found and removed safely');
+  // the panel keeps filtered clips one tap away
+  {
+    const { buildNightModel, renderNightClips } = await import('../js/night-clips.js');
+    const evs = [{ id: 'g', type: 'noise', timestamp: 1, duration: 12, filtered: 'junk' }, { id: 'b', type: 'bruxism', timestamp: 2, duration: 30 }];
+    const m = buildNightModel({ session: { startTime: 0, endTime: 3600e3 }, events: evs, clips: [{ id: 'cg', eventId: 'g' }, { id: 'cb', eventId: 'b' }] });
+    eq(m.items.length, 1, 'filtered clip not in the main list');
+    eq(m.filtered.length, 1, 'but in the filtered list');
+    ok(renderNightClips(m).includes('Show filtered-out (1)'), '"Show filtered-out" button');
+    const open = renderNightClips(m, { showFiltered: true });
+    ok(open.includes('Filtered out') && open.includes('quiet background') && (open.match(/nc-row/g) || []).length === 2, 'expanded: filtered clip playable with its reason');
+  }
+  pass('old junk clips are hidden (never deleted) and can be shown again');
 }

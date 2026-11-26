@@ -97,6 +97,15 @@ const APNEA_CLIP_LEAD_SEC = 20;
 // < 15: ~1 in 10 flagged pauses is real at the counting cut-off). All candidates
 // still feed the hourly estimate (the validated number); only likely ones get a clip
 export const APNEA_SHOW_PROB = 0.6;
+// a pause can only be judged where breathing was audible: a breathing-rate
+// estimate within 3 min before it. A phone in a very quiet room often hears no
+// breath at all, and "no breath sound, then a noise" is not an apnea.
+const APNEA_AUDIBLE_BEFORE_MS = 180000;
+const APNEA_MAX_SEC = 60; // longer "pauses" are silence the mic could not resolve
+const AHI_MIN_AUDIBLE_SEC = 1800; // need 30 min of audible breathing for an estimate
+// phone handling: putting the phone down / picking it up to stop
+const SETTLE_MS = 60000;
+const HANDLING_TAIL_MS = 90000;
 const APNEA_CLIP_TAIL_SEC = 8; // the recovery breaths; detection fires ~30 s later, so this audio exists
 
 // background-resilience watchdog
@@ -125,6 +134,7 @@ const BASELINE_WARMUP = 15; // 30 s before the baseline is trusted
 // only a few representative clips are kept, the rest are counted and timed
 const CLICK_CLUSTER_GAP_MS = 10000;
 const MAX_CLICK_CLIPS = 8;
+const GRINDISH_SCORE = 0.25; // model's grinding probability that always earns a clip
 const MIN_CLICKS_PER_EVENT = 2;
 const MAX_CLICK_TIMES = 4000;
 const TMJ_WINDOW_MS = 120000; // clicks this close to grinding: possibly TMJ/bruxism-related
@@ -496,7 +506,10 @@ export class AudioEngine {
     const totalDuration = Math.max(0, (endTime - startTime) / 1000);
     const t = this._tally;
     const pct = (d) => (totalDuration ? round1((d / totalDuration) * 100) : 0);
-    const ahi = ApneaDetector.calculateAhiMetrics(this.apneaDetector.events, totalDuration);
+    const audibleSec = this._breathAudibleSec();
+    const ahiRaw = ApneaDetector.calculateAhiMetrics(this._apneaKept, audibleSec);
+    const ahi = audibleSec >= AHI_MIN_AUDIBLE_SEC ? ahiRaw : { ...ahiRaw, estimatedAhi: null, severity: 'unknown' };
+    await this._dropHandlingTail();
 
     this._markHearing(); // close an open gap at the stop time
     const summaryPatch = {
@@ -515,6 +528,8 @@ export class AudioEngine {
       ...this._nightDbA(),
       apneaEvents: t.apneaEvents,
       apneaDuration: round1(t.apneaDuration),
+      apneaUnheard: t.apneaUnheard || 0,
+      breathAudibleSec: audibleSec,
       estimatedAhi: ahi.estimatedAhi,
       ahiSeverity: ahi.severity,
     };
@@ -775,7 +790,10 @@ export class AudioEngine {
     const p = this._pending;
     const inBout = !!(p && p.emitted && (p.type === 'snoring' || p.type === 'bruxism'));
     const snoreish = !!(raw && raw.scores && (raw.scores.snoring || 0) >= BOUT_SNORE_MEAN);
-    const loud = level >= threshold && (inBout || snoreish || level >= this.deviationThreshold());
+    // err towards keeping anything that may be grinding: it skips the baseline bar
+    const grindish = !!(raw && raw.scores && (raw.scores.bruxism || 0) >= GRINDISH_SCORE);
+    const settling = this._inSettle(this._ctxToWall(msg.timestamp));
+    const loud = !settling && level >= threshold && (inBout || snoreish || grindish || level >= this.deviationThreshold());
     // no "confident quiet" veto: steady background (a fan, AC) is already
     // absorbed into the floor, and the model often calls a quiet cough "quiet"
     if (result.type === 'noise' && result.confidence >= 0.4 && loud) {
@@ -797,7 +815,8 @@ export class AudioEngine {
     if (this._floor == null) this._trackLevel(msg);
     this._noteQuiet(msg);
     const positive = this._effectiveType(result, msg, raw);
-    const devHit = !!positive && this._windowLevel(msg) >= this.deviationThreshold();
+    const grindy = !!(raw && raw.scores && (raw.scores.bruxism || 0) >= GRINDISH_SCORE);
+    const devHit = !!positive && (grindy || this._windowLevel(msg) >= this.deviationThreshold());
     this._trackLevel(msg);
     this._noteBaseline(msg);
     if (!positive) this._noteBackgroundBand(msg);
@@ -958,7 +977,11 @@ export class AudioEngine {
       timestamp: Math.round(p.startWall),
       hasClip: false,
     };
-    if (p.type === 'noise') rec.subtype = this._noiseLabel(p, duration);
+    if (p.type === 'noise') {
+      rec.subtype = this._noiseLabel(p, duration);
+      this._handlingEvents.push({ id: p.eventId, start: p.startWall, kind: 'noise' });
+      if (this._handlingEvents.length > 50) this._handlingEvents.shift();
+    }
     if (this.storage) this.storage.addEvent(rec).catch((e) => console.warn('[AudioEngine] addEvent:', e));
     this._tally[p.type + 'Episodes'] += 1;
 
@@ -1033,6 +1056,11 @@ export class AudioEngine {
     const ctxTime = typeof msg.timestamp === 'number' ? msg.timestamp : this._wallToCtx(Date.now());
     const ev = this.apneaDetector.feed(result, msg, this._ctxToWall(ctxTime));
     if (!ev) return;
+    if (!this._breathAudibleBefore(ev.startTime) || ev.duration > APNEA_MAX_SEC) {
+      this._tally.apneaUnheard = (this._tally.apneaUnheard || 0) + 1;
+      return;
+    }
+    this._apneaKept.push({ ...ev, type: 'apnea' });
 
     const eventId = cryptoId();
     const sessionId = this.session ? this.session.id : null;
@@ -1371,6 +1399,8 @@ export class AudioEngine {
 
   // ---- night baseline, sound labels, breathing rate, clicks ------------
   _resetNight() {
+    this._apneaKept = [];
+    this._handlingEvents = [];
     this._lvlHist = [];
     this._rr = new RespRateTracker();
     this._clickCluster = null;
@@ -1453,6 +1483,34 @@ export class AudioEngine {
     return labelNoise({ tonal: p.sh.tonal / n, stable: newTone ? p.sh.stable / n : 0, burst: p.sh.burst / n }, durationSec);
   }
 
+  _breathAudibleBefore(t) {
+    return this._rr.points.some((p) => p.t >= t - APNEA_AUDIBLE_BEFORE_MS && p.t <= t + 30000);
+  }
+
+  /** Seconds of the night with audibly rhythmic breathing (estimates every 30 s). */
+  _breathAudibleSec() {
+    return this._rr ? this._rr.points.length * 30 : 0;
+  }
+
+  _inSettle(wall) {
+    return wall - this.startWallTime < (this.settleMs ?? SETTLE_MS);
+  }
+
+  /** On stop: sounds/clicks in the last 90 s are the phone being picked up (hidden, not deleted). */
+  async _dropHandlingTail() {
+    const cut = Date.now() - HANDLING_TAIL_MS;
+    const ids = this._handlingEvents.filter((e) => e.start >= cut).map((e) => e.id);
+    if (!ids.length || !this.storage) return;
+    for (const id of ids) {
+      const ev = this._handlingEvents.find((e) => e.id === id);
+      if (ev && ev.kind === 'click') {
+        this._clicks.events = Math.max(0, this._clicks.events - 1);
+        this._clicks.count = Math.max(0, this._clicks.count - (ev.n || 0));
+      } else this._tally.noiseEpisodes = Math.max(0, this._tally.noiseEpisodes - 1);
+    }
+    for (const id of ids) await this.storage.updateEvent(id, { filtered: 'handling' }).catch(() => {});
+  }
+
   _feedRespRate(msg) {
     if (!msg.breath || !msg.breath.length) return;
     const wall = this._ctxToWall(msg.timestamp);
@@ -1474,6 +1532,7 @@ export class AudioEngine {
     const ctxStart = (typeof msg.timestamp === 'number' ? msg.timestamp : this._wallToCtx(wall)) - WINDOW_SEC;
     for (const c of clicks) {
       const t = winStart + c.t * 1000;
+      if (this._inSettle(t)) continue; // putting the phone down
       const ctx = ctxStart + c.t;
       this._clicks.count += 1;
       if (row) row.ck = (row.ck || 0) + 1;
@@ -1519,6 +1578,8 @@ export class AudioEngine {
       this._clicks.nearGrindEvents += 1;
     }
     this._clickEvents.push({ id: eventId, start: cl.start, end: cl.last, n: cl.n, nearGrind });
+    this._handlingEvents.push({ id: eventId, start: cl.start, kind: 'click', n: cl.n });
+    if (this._handlingEvents.length > 50) this._handlingEvents.shift();
     if (this._clickEvents.length > 400) this._clickEvents.shift();
     // a few representative clips, not hundreds
     const want = this._clickClips < MAX_CLICK_CLIPS && (nearGrind || cl.n >= 3 || this._clickClips < 3);

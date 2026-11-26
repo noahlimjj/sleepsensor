@@ -1464,3 +1464,4 @@ a {
 .nc-btn--primary.is-busy::before { border-color: var(--light); border-top-color: var(--black); }
 @keyframes ss-spin { to { transform: rotate(360deg); } }
 .setting-hint { font-size: 0.8rem; color: var(--mid-light); margin: 6px 0 0 32px; line-height: 1.4; }
+.nc-btn--ghost { flex: 0 0 auto; background: transparent; border: 1px solid var(--mid-dark); color: var(--light); }

@@ -76,6 +76,17 @@ export async function run() {
     ok(true, 'unzip -t: no CRC errors');
   }
 
+  // selected clips only: plain .wav files to the share sheet, no zip, no log
+  {
+    const native = fakeNative();
+    const r = await exportNight({ storage, native, clipIds: ['c2'], filesOnly: true });
+    eq(r.how, 'native-files', 'selection shared as files');
+    eq(native.calls.share[0].names.length, 1, 'one file');
+    ok(native.calls.share[0].names[0].endsWith('.wav'), `a .wav (${native.calls.share[0].names[0]})`);
+    const w = native.fs.get(`export//${native.calls.share[0].names[0]}`);
+    eq(w.toString('ascii', 0, 4), 'RIFF', 'valid WAV written');
+  }
+
   // no native, no share: browser downloads the zip
   {
     const clicked = [];

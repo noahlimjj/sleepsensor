@@ -12,9 +12,10 @@
  */
 
 const FS = 10; // envelope frames per second
-const MIN_BPM = 6;
+const MIN_BPM = 8; // slower is rare in sleeping adults; below it, room hum/drift fakes a rhythm
 const MAX_BPM = 30;
-export const MIN_QUALITY = 0.3;
+export const MIN_QUALITY = 0.4;
+const MIN_SWING_DB = 1.5; // breath must move the band level this much (std, dB) to be heard at all
 export let DOUBLE_RATIO = 1.3;
 export let FUNDAMENTAL_SHARE = 0.7;
 export function _setShare(v) { FUNDAMENTAL_SHARE = v; }
@@ -54,6 +55,7 @@ export function estimateRate(db, fs = FS) {
   let e0 = 0;
   for (let i = 0; i < n; i++) e0 += x[i] * x[i];
   if (e0 <= 1e-9) return null;
+  if (Math.sqrt(e0 / n) < MIN_SWING_DB) return null; // breathing not audible
   const minLag = Math.round((60 / MAX_BPM) * fs);
   const maxLag = Math.round((60 / MIN_BPM) * fs);
   const r = new Float64Array(maxLag + 2);

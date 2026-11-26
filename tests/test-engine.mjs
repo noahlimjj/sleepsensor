@@ -30,6 +30,7 @@ function makeEngine() {
   engine.startWallTime = 0;
   engine.ctxStartTime = 0;
   engine._recording = true;
+  engine.settleMs = 0; // unit tests start sounds in the first seconds
   engine.audioContext = { sampleRate: 16000 };
   engine.workletNode = {
     port: { postMessage: (m) => m.command === 'extract-clip' && calls.clipReq.push(m) },

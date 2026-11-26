@@ -115,7 +115,7 @@ async function writeNative(native, kind, dir, file, onProgress = null) {
  * Files → On My iPhone → Sleep Sensor → Exports, then the share sheet opens.
  * onProgress({ stage: 'clips'|'zip'|'save'|'share', done, total })
  */
-export async function exportNight({ storage, native, sessionId = null, clipIds = null, onProgress = null, nav = globalThis.navigator, doc = globalThis.document } = {}) {
+export async function exportNight({ storage, native, sessionId = null, clipIds = null, filesOnly = false, onProgress = null, nav = globalThis.navigator, doc = globalThis.document } = {}) {
   const sessions = await storage.getAllSessions();
   if (!sessions.length) return { ok: false, how: 'empty', files: 0 };
   const session = sessionId
@@ -124,6 +124,7 @@ export async function exportNight({ storage, native, sessionId = null, clipIds =
   if (!session) return { ok: false, how: 'empty', files: 0 };
   const step = (stage, done = 0, total = 0) => onProgress && onProgress({ stage, done, total });
   const files = await nightFiles(storage, session, { clipIds, onProgress: (d, t) => step('clips', d, t) });
+  if (filesOnly) return shareFilesOnly(files.filter((f) => !f.name.endsWith('log.json')), { native, nav, doc, step });
   step('zip', 0, files.length);
   const name = `SleepSensor ${nightStamp(session.startTime)}${clipIds ? ' selection' : ''}.zip`;
   const zip = await makeZip(files, (d, t) => step('zip', d, t));
@@ -168,6 +169,57 @@ export async function exportNight({ storage, native, sessionId = null, clipIds =
       a.remove();
       URL.revokeObjectURL(url);
     }, 1500);
+    return { ok: true, how: 'download', ...info };
+  }
+  return { ok: false, how: 'unsupported', ...info };
+}
+
+/** Selected clips as plain .wav files in the share sheet (no zip, no log). */
+async function shareFilesOnly(wavs, { native, nav, doc, step }) {
+  const info = { files: wavs.length, clips: wavs.length, bytes: wavs.reduce((a, f) => a + f.blob.size, 0), name: `${wavs.length} clip${wavs.length === 1 ? '' : 's'}` };
+  if (!wavs.length) return { ok: false, how: 'empty', ...info };
+  if (native && native.canWriteFiles) {
+    await native.clearFiles({ kind: 'export' });
+    for (let i = 0; i < wavs.length; i++) {
+      step('save', i, wavs.length);
+      await writeNative(native, 'export', null, wavs[i]);
+    }
+    step('share');
+    let completed = false;
+    try {
+      const r = await native.shareFiles({ kind: 'export', names: wavs.map((f) => f.name) });
+      completed = !!(r && r.completed);
+    } catch (_) {
+      /* dismissed */
+    }
+    return { ok: true, how: 'native-files', completed, ...info };
+  }
+  if (nav && nav.canShare && typeof File !== 'undefined') {
+    const fl = wavs.map((f) => new File([f.blob], f.name, { type: 'audio/wav' }));
+    try {
+      if (nav.canShare({ files: fl })) {
+        step('share');
+        await nav.share({ title: 'SleepSensor clips', files: fl });
+        return { ok: true, how: 'share', ...info };
+      }
+    } catch (e) {
+      if (e && e.name === 'AbortError') return { ok: false, how: 'cancelled', ...info };
+    }
+  }
+  if (doc && typeof URL !== 'undefined' && URL.createObjectURL) {
+    for (const f of wavs) {
+      const url = URL.createObjectURL(f.blob);
+      const a = doc.createElement('a');
+      a.href = url;
+      a.download = f.name;
+      a.style.display = 'none';
+      doc.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        a.remove();
+        URL.revokeObjectURL(url);
+      }, 1500);
+    }
     return { ok: true, how: 'download', ...info };
   }
   return { ok: false, how: 'unsupported', ...info };

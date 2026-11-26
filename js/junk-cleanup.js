@@ -7,6 +7,10 @@
  * generic sound; only ones that clearly stand out (+8 dB) or are among the
  * night's 5 loudest stay. Snoring, grinding, breathing pauses, clicks,
  * movement, buzzing and the loudest-moment highlights are never touched.
+ *
+ * NOTHING IS DELETED (an earlier version deleted, and lost a grinding clip the
+ * old detector had called "Noise"): junk is only marked `filtered: 'junk'`, so
+ * it drops out of the lists and stays one tap away under "Show filtered-out".
  */
 
 const STANDOUT_DB = 8;
@@ -14,7 +18,7 @@ const KEEP_LOUDEST = 5;
 const MIN_TO_FILTER = 6;
 const WEAK_PAUSE = 0.6; // breathing pauses below this are mostly false on ordinary nights // nights with only a few generic sounds are left alone
 
-const isGeneric = (e) => e.type === 'noise' && (!e.subtype || e.subtype === 'other');
+const isGeneric = (e) => e.type === 'noise' && (!e.subtype || e.subtype === 'other') && !e.filtered;
 const level = (e) => (typeof e.peakDbA === 'number' ? e.peakDbA : typeof e.peakDb === 'number' ? e.peakDb : null);
 
 /** @returns {{ ids: string[], seconds: number }} junk generic events of one night */
@@ -35,24 +39,16 @@ export async function cleanupJunk(storage, { apply = false } = {}) {
   let events = 0, clips = 0, nights = 0;
   for (const s of sessions) {
     const evs = await storage.getEventsBySession(s.id);
-    const { ids, seconds } = findJunk(evs);
-    const anyWeak = evs.some((e) => e.type === 'apnea' && (e.confidence ?? 0) < WEAK_PAUSE && e.hasClip);
-    if (!ids.length && !anyWeak) continue;
+    const { ids } = findJunk(evs);
+    if (!ids.length) continue;
     nights += 1;
     events += ids.length;
     const set = new Set(ids);
     const sessClips = await storage.getClipsBySession(s.id);
-    // clips of unlikely breathing pauses go too (the events stay: they feed the hourly estimate)
-    const weakPause = new Set(evs.filter((e) => e.type === 'apnea' && (e.confidence ?? 0) < WEAK_PAUSE).map((e) => e.id));
-    const clipIds = sessClips.filter((c) => set.has(c.eventId) || weakPause.has(c.eventId)).map((c) => c.id);
-    clips += clipIds.length;
+    clips += sessClips.filter((c) => set.has(c.eventId)).length;
     if (apply) {
-      await storage.deleteEventsAndClips(ids, clipIds);
-      await storage.updateSession(s.id, {
-        noiseEpisodes: Math.max(0, (s.noiseEpisodes || 0) - ids.length),
-        noiseDuration: Math.max(0, (s.noiseDuration || 0) - seconds),
-        junkCleaned: (s.junkCleaned || 0) + ids.length,
-      });
+      for (const id of ids) await storage.updateEvent(id, { filtered: 'junk' }).catch(() => {});
+      await storage.updateSession(s.id, { junkHidden: (s.junkHidden || 0) + ids.length });
     }
   }
   return { nights, events, clips };

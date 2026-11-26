@@ -24,7 +24,7 @@ const errors = []; page.on('pageerror', (e) => errors.push(e.message)); page.on(
 await page.goto(`http://localhost:${server.address().port}/`);
 await page.waitForTimeout(1500);
 await page.click('#nav-settings'); await page.click('#setting-sample-btn'); await page.waitForTimeout(3000);
-await page.click('#nav-settings'); await page.click('#setting-export-btn'); await page.waitForTimeout(1500);
+await page.click('#nav-report'); await page.waitForTimeout(1500); await page.locator('#night-clips-section').scrollIntoViewIfNeeded();
 const sec = page.locator('#night-clips-section');
 await sec.screenshot({ path: `${OUT}/nc-collapsed.png` });
 const rows = await page.locator('.nc-row').count();

@@ -160,7 +160,7 @@ async function main() {
     const cs = await page.textContent('#setting-cleanup-status').catch(() => '');
     const dlg = await page.$eval('#confirm-dialog', (d) => d.open);
     if (dlg) await page.click('#confirm-cancel');
-    check(dlg || /Nothing to clean/.test(cs || ''), 'clean-up: confirm dialog or "nothing to clean"');
+    check(dlg || /Nothing to hide/.test(cs || ''), 'hide junk: confirm dialog or "nothing to hide"');
     await page.click('#setting-clear-btn');
     await page.waitForTimeout(150);
     await page.click('#confirm-cancel');

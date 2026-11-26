@@ -59,12 +59,14 @@ const round3 = (x) => Math.round(x * 1000) / 1000;
 /** Label a generic sound bout from its mean shape. */
 export function labelNoise(shape, durationSec) {
   if (!shape) return 'other';
-  if (shape.tonal >= BUZZ_TONAL && shape.stable >= BUZZ_STABLE && shape.burst <= BUZZ_MAX_BURST && durationSec >= 2) return 'buzz';
+  // tones below ~120 Hz (lowest mel bands) are room hum: fridge, AC, mains
+  if (shape.tonal >= BUZZ_TONAL && shape.stable >= BUZZ_STABLE && shape.burst <= BUZZ_MAX_BURST && durationSec >= 2 && (shape.band ?? 99) >= BUZZ_MIN_BAND) return 'buzz';
   if (shape.tonal < MOVE_TONAL && shape.burst >= MOVE_BURST && durationSec <= 30) return 'movement';
   return 'other';
 }
 export const BUZZ_TONAL = 0.3;
 export const BUZZ_STABLE = 0.7;
 export const BUZZ_MAX_BURST = 0.16;
+export const BUZZ_MIN_BAND = 9; // mel band ~120 Hz at 16 kHz / 128 bands
 export const MOVE_TONAL = 0.25;
 export const MOVE_BURST = 0.1;

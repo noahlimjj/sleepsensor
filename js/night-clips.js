@@ -59,13 +59,22 @@ export function dur(sec) {
 export const APNEA_SHOW_PROB = 0.6;
 
 export function buildNightModel({ session, events: allEvents = [], highlights = [], clips = [] }) {
-  const events = allEvents.filter((e) => e.type !== 'apnea' || (e.confidence ?? 0) >= APNEA_SHOW_PROB);
+  // filtered = hidden by default but never deleted: old junk clean-up, phone
+  // handling at start/stop, and unlikely breathing pauses ("Show filtered-out")
+  const filterReason = (e) => e.filtered || (e.type === 'apnea' && (e.confidence ?? 0) < APNEA_SHOW_PROB ? 'unlikely pause' : null);
+  const events = allEvents.filter((e) => !filterReason(e));
+  const filtered = [];
   const evById = new Map(events.map((e) => [e.id, e]));
   const hlById = new Map(highlights.map((h) => [h.id, h]));
   const items = [];
   const hidden = new Set(allEvents.filter((e) => !events.includes(e)).map((e) => e.id));
+  const allById = new Map(allEvents.map((e) => [e.id, e]));
   for (const c of clips) {
-    if (hidden.has(c.eventId)) continue;
+    if (hidden.has(c.eventId)) {
+      const fe = allById.get(c.eventId);
+      filtered.push({ clipId: c.id, kind: kindOf(fe.type, fe.subtype), time: fe.timestamp || c.timestamp, dur: fe.duration || c.duration || 0, db: fe.peakDb, reason: filterReason(fe) });
+      continue;
+    }
     const ev = evById.get(c.eventId);
     const hl = hlById.get(c.eventId);
     const type = ev ? ev.type : hl ? hl.classifiedAs : 'noise';
@@ -129,7 +138,8 @@ export function buildNightModel({ session, events: allEvents = [], highlights = 
   const clickTimes = ((session.clicks && session.clicks.times) || []).map((ms) => start + ms);
   const rr = (session.trace || []).filter((r) => typeof r.rr === 'number').map((r) => ({ t: start + r.m * 60000, bpm: r.rr }));
   const gaps = (session.listenGaps || []).map((g) => ({ t: g.start, dur: g.sec }));
-  return { summary, groups, timeline, gaps, items, clickTimes, rr };
+  filtered.sort((a, b) => a.time - b.time);
+  return { summary, groups, timeline, gaps, items, clickTimes, rr, filtered };
 }
 
 /** Clicks: count, how many sit within 2 min of grinding, and the busiest hour. */
@@ -232,7 +242,22 @@ function clickLine(c) {
  * @param {object} m          buildNightModel() result
  * @param {{expanded?:Set<string>, selected?:Set<string>, playIcon?:string}} state
  */
-export function renderNightClips(m, { expanded = new Set(), selected = new Set(), playIcon = '▶' } = {}) {
+const REASON = { junk: 'quiet background', handling: 'phone handling', 'unlikely pause': 'unlikely pause' };
+const KIND_LABEL = Object.fromEntries(KINDS.map((k) => [k.key, k.label]));
+
+function filteredSection(m, showFiltered, selected, playIcon) {
+  const f = m.filtered || [];
+  if (!f.length) return '';
+  let h = `<button class="nc-more nc-filtered-toggle" data-toggle-filtered="1">${showFiltered ? 'Hide filtered-out' : `Show filtered-out (${f.length})`}</button>`;
+  if (!showFiltered) return h;
+  h += '<section class="nc-group nc-group--filtered"><header class="nc-group-head"><span class="nc-group-title">Filtered out</span><span class="nc-group-meta">kept on the phone</span></header>';
+  for (const i of f) {
+    h += row({ ...i, loudest: false }, selected, playIcon).replace('<span class="nc-dur">', `<span class="nc-dur">${KIND_LABEL[i.kind] || 'Sound'} · ${REASON[i.reason] || i.reason} · `);
+  }
+  return h + '</section>';
+}
+
+export function renderNightClips(m, { expanded = new Set(), selected = new Set(), playIcon = '▶', showFiltered = false } = {}) {
   const s = m.summary;
   const stat = (v, l) => `<div class="nc-stat"><span class="nc-stat-v">${v}</span><span class="nc-stat-l">${l}</span></div>`;
   let h = `<div class="nc-summary">
@@ -243,11 +268,12 @@ export function renderNightClips(m, { expanded = new Set(), selected = new Set()
     ${clickLine(s.clicks)}
   </div>`;
   h += timelineSvg(m);
-  if (!m.items.length) return h + '<p class="nc-empty">No clips saved this night.</p>';
+  if (!m.items.length) return h + '<p class="nc-empty">No clips saved this night.</p>' + filteredSection(m, showFiltered, selected, playIcon);
 
   h += `<div class="nc-actions">
     <button class="nc-btn nc-btn--primary" data-action="share-all">Share all (${m.items.length})</button>
-    <button class="nc-btn" data-action="share-selected"${selected.size ? '' : ' disabled'}>Share selected${selected.size ? ` (${selected.size})` : ''}</button>
+    <button class="nc-btn" data-action="share-selected"${selected.size ? '' : ' disabled'}>${selected.size ? `Share ${selected.size} clip${selected.size === 1 ? '' : 's'} (.wav)` : 'Select clips to share'}</button>
+    <button class="nc-btn nc-btn--ghost" data-action="select-all">${selected.size ? 'Clear' : 'Select all'}</button>
   </div>`;
   for (const g of m.groups) {
     if (!g.clips) continue;
@@ -268,5 +294,6 @@ export function renderNightClips(m, { expanded = new Set(), selected = new Set()
     }
     h += '</section>';
   }
+  h += filteredSection(m, showFiltered, selected, playIcon);
   return h;
 }
